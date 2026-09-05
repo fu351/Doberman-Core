@@ -129,7 +129,8 @@ def test_missing_session_id_uses_entity_scope_taint(tmp_path):
     assert "multi_step_exfil" in _reason(out)
 
 
-def test_codex_taint_floor_multistep_exfil_denied(tmp_path):
+@pytest.mark.guarantee("secret-egress-taint-floor", host="codex")
+def test_codex_taint_floor_multistep_exfil_denied(tmp_path, monkeypatch):
     """Codex-adapter parity: every test above exercises only
     ``doberman.hosthooks.claude_code``'s ``evaluate_pre``/``evaluate_post``. The
     Codex adapter (``doberman.hosthooks.codex``) shares the same spine and taint
@@ -140,6 +141,15 @@ def test_codex_taint_floor_multistep_exfil_denied(tmp_path):
     (payload 1, ``Get-Content .env``) has a later egress (payload 2, the ``curl``
     POST) raised — not just the Claude Code path."""
     from doberman.hosthooks import codex
+
+    class _DenyPrompter:
+        def confirm(self, message):
+            return False
+
+        def read_code(self, message):
+            return ""
+
+    monkeypatch.setattr(codex, "AUTH_PROMPTER", _DenyPrompter())
 
     session_id = "codex-sess-1"
 
