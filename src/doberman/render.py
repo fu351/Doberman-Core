@@ -126,6 +126,40 @@ def _deadline_phrase(span: str) -> str:
 #: restoring them after. Always shorter than `_MIN_WRAP_WIDTH`, so it never
 #: forces `textwrap`'s own long-word splitting.
 _UNBREAKABLE_COMMAND_RE = re.compile(r"'doberman [^']*'")
+_URL_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_unbreakable_token(token: str) -> bool:
+    """Whether a long whitespace-delimited token must remain intact."""
+    if "\x00" in token:  # spaces hidden inside a quoted Doberman command
+        return True
+    value = token.strip("()[]{}<>,;:'\"")
+    if _URL_TOKEN_RE.match(value) or _WINDOWS_DRIVE_PATH_RE.match(value):
+        return True
+    if "\\" in value or value.startswith(("/", "./", "../", "~/")):
+        return True
+    # A slash-bearing option is a compound flag, not a relative path. Other
+    # slash-bearing tokens plausibly name a relative path and stay readable.
+    return "/" in value and not value.startswith("-")
+
+
+class _PathAwareTextWrapper(textwrap.TextWrapper):
+    """Force-break ordinary long tokens while leaving path-shaped ones whole."""
+
+    def _handle_long_word(
+        self,
+        reversed_chunks: list[str],
+        cur_line: list[str],
+        cur_len: int,
+        width: int,
+    ) -> None:
+        if _is_unbreakable_token(reversed_chunks[-1]):
+            if not cur_line:
+                cur_line.append(reversed_chunks.pop())
+            return
+        super()._handle_long_word(reversed_chunks, cur_line, cur_len, width)
+
 
 #: "Next" lines: one accurate, actionable line per verdict - what a human can
 #: actually do about this decision, using only real `doberman` commands/files
@@ -334,12 +368,9 @@ def wrap_detail(
     ``"- name: "`` and want continuation lines to land under the text rather
     than under the marker.
 
-    A ``\\S+`` token containing ``\\`` or ``/`` (a Windows path, a POSIX path,
-    a URL) is never split mid-token, even if that makes a line run past
-    ``width`` — a garbled path is worse than a long line. ponytail: this
-    disables long-word breaking for every token, not just path-shaped ones;
-    upgrade to a token-aware wrapper if a non-path overlong word ever needs
-    force-breaking.
+    Path-shaped tokens (Windows/POSIX paths and URLs) are never split
+    mid-token, even if that makes a line run past ``width`` — a garbled path
+    is worse than a long line. Other overlong tokens are force-broken.
     """
     if width is None:
         width, _ = shutil.get_terminal_size(fallback=(100, 24))
@@ -349,12 +380,12 @@ def wrap_detail(
     # A quoted command must land whole on one line (the TUI/`log --why` show
     # them verbatim): hide its spaces from the wrapper, restore them after.
     protected = _UNBREAKABLE_COMMAND_RE.sub(lambda m: m.group(0).replace(" ", "\x00"), text)
-    wrapped = textwrap.wrap(
-        protected,
+    wrapper = _PathAwareTextWrapper(
         width=width,
         initial_indent=initial_indent,
         subsequent_indent=subsequent_indent,
-        break_long_words=False,
+        break_long_words=True,
         break_on_hyphens=False,
-    ) or [initial_indent]
+    )
+    wrapped = wrapper.wrap(protected) or [initial_indent]
     return [line.replace("\x00", " ") for line in wrapped]
