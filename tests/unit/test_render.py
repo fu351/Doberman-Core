@@ -287,6 +287,36 @@ def test_wrap_detail_never_breaks_inside_a_path_token():
     assert any(windows_path in line for line in lines)
 
 
+def test_wrap_detail_force_breaks_an_overlong_non_path_token():
+    # #622: a token far wider than the clamp that is NOT a path must be
+    # hard-wrapped so no rendered line overflows the width.
+    token = "deadbeefcafefeed" * 8  # 128 chars, no break opportunities
+    lines = render.wrap_detail(token, indent=4, width=60)
+    assert len(lines) > 1
+    assert all(len(line) <= 60 for line in lines)
+    # No character of the token is dropped when it is force-broken.
+    assert "".join(line.strip() for line in lines) == token
+
+
+def test_wrap_detail_force_breaks_an_overlong_option_that_merely_contains_a_slash():
+    # #622: `--foo/bar/...` contains a slash but is an option flag, not a path,
+    # so it must be force-broken rather than allowed to run past the width.
+    option = "--foo/bar/baz-" + "some-extremely-long-value" * 4
+    lines = render.wrap_detail(option, indent=0, width=60)
+    assert len(lines) > 1
+    assert all(len(line) <= 60 for line in lines)
+
+
+def test_wrap_detail_never_breaks_a_posix_path_or_url_token():
+    # The narrowing in #622 must not regress genuine paths/URLs: a POSIX path
+    # and a scheme URL, both far wider than the width, still land whole.
+    posix_path = "/var/lib/doberman/policies/a-very-long-policy-file-name.yaml"
+    url = "https://example.com/some/very/long/path/that/exceeds/the/wrap/width"
+    for token in (posix_path, url):
+        lines = render.wrap_detail(f"see {token} for detail", indent=0, width=40)
+        assert any(token in line for line in lines)
+
+
 def test_next_step_line_known_verdicts_and_pass_has_none():
     # Shared by the `tui` browser's docked "Next" widget and `doberman log
     # --why` (round 4 design critique item 8) - one source of truth.
