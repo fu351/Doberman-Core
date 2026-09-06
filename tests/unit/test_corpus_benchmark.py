@@ -360,3 +360,51 @@ def test_payload_never_appears_in_reports(tmp_path):
     rows = load_corpus(p)
     m = corpus_metrics([_result(rows[0], Verdict.AUTH)])
     assert MARKER not in json.dumps(m)
+
+
+def test_auth_gated_breakdown_groups_attack_auth_rows_by_shape():
+    """Attack rows that stop at AUTH (not BLOCK) are broken down by shape.
+
+    Shape = (category, action_type, sorted reason codes). Hard blocks, misses,
+    and benign friction never land in the breakdown; ids are payload-free.
+    """
+
+    def row(id_: str, kind: str, action_type: str) -> CorpusRow:
+        return CorpusRow(
+            id=id_,
+            kind=kind,
+            surfaces={"action_type": action_type, "mode": "balanced"},
+            is_attack=True,
+            expected_verdict_at_least=Verdict.AUTH,
+        )
+
+    results = [
+        RowResult(
+            row("e1", "encoded", "file_write"), Verdict.AUTH, ("encoded_blob", "high_entropy")
+        ),
+        # Same shape as e1: the code order differs, the sorted tuple does not.
+        RowResult(
+            row("e2", "encoded", "file_write"), Verdict.AUTH, ("high_entropy", "encoded_blob")
+        ),
+        RowResult(row("d1", "destructive", "shell_exec"), Verdict.AUTH, ("egress_requires_auth",)),
+        RowResult(row("d2", "destructive", "shell_exec"), Verdict.BLOCK, ("destructive_command",)),
+        RowResult(row("i1", "injection", "final_output"), Verdict.PASS, ()),
+        _result(_benign("b1"), Verdict.AUTH),  # benign friction is not an AUTH-gated attack
+    ]
+    m = corpus_metrics(results)
+
+    gated = m["auth_gated"]
+    assert gated["n"] == 3
+    # 4 attacks mitigated (3 AUTH + 1 BLOCK); 3 of them rest on a human.
+    assert gated["share_of_mitigated"] == pytest.approx(0.75)
+    assert [
+        (s["category"], s["action_type"], s["reason_codes"], s["n"], s["ids"])
+        for s in gated["by_shape"]
+    ] == [
+        ("encoded", "file_write", ["encoded_blob", "high_entropy"], 2, ["e1", "e2"]),
+        ("destructive", "shell_exec", ["egress_requires_auth"], 1, ["d1"]),
+    ]
+    assert m["by_category"]["encoded"]["auth_gated"] == 2
+    assert m["by_category"]["destructive"]["auth_gated"] == 1
+    assert m["by_category"]["injection"]["auth_gated"] == 0
+    assert m["by_category"]["benign"]["auth_gated"] == 0
