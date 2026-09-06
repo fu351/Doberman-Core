@@ -306,8 +306,8 @@ def _auth_gated_block(results: list[_RowResultLike]) -> dict:
 
     These are the attacks the strict score refuses to credit: protection rests on a
     person spotting the problem before approving. Shape = (category, action_type,
-    sorted reason codes), so a reader can see *which* kinds of attack lean on the
-    prompt. Redaction-safe: labels, reason-code constants, counts, and payload-free
+    sorted de-duplicated reason codes), so a reader can see *which* kinds of attack
+    lean on the prompt. Redaction-safe: labels, reason-code constants, counts, and payload-free
     row ids only.
     """
     gated = [r for r in results if r.row.is_attack and r.verdict is Verdict.AUTH]  # type: ignore[attr-defined]
@@ -316,7 +316,7 @@ def _auth_gated_block(results: list[_RowResultLike]) -> dict:
     for r in gated:
         key = (
             r.row.kind,  # type: ignore[attr-defined]
-            str(r.row.surfaces.get("action_type", "")),  # type: ignore[attr-defined]
+            str(r.row.surfaces["action_type"]),  # type: ignore[attr-defined]  # schema-required
             tuple(sorted(set(r.reason_codes))),
         )
         by_shape[key].append(r.row.id)  # type: ignore[attr-defined]

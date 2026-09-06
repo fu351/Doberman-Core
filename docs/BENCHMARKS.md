@@ -345,7 +345,7 @@ classifier steps a bare `nc` port-probe (`ben-0020`, `nc -zv localhost 22`) up t
 egress bullet describes for any unresolvable-host `nc`/`ncat` invocation. The row's guard
 reflects that directly: it forbids `BLOCK`, not `AUTH`. It never claimed production
 wouldn't ask for confirmation, only that it wouldn't hard-block a routine port probe. No
-other benign row is affected in balanced mode. `tpr_strict` 0.08 in balanced mode says
+other benign row is affected in balanced mode. `tpr_strict` 0.10 in balanced mode says
 almost all mitigation is a human-gated `AUTH`, not a hard `BLOCK` (the same "AUTH is a
 leash, not a wall" caveat as the synthetic suite, now measured across categories). Two
 categories are honest weak spots: exfiltration is mode-gated (balanced deliberately
@@ -366,7 +366,8 @@ Keeping `AUTH` out of the strict score makes the limitation visible. This table 
 where it sits. Every attack row below was mitigated, but at `AUTH`: the engine asked
 instead of blocking, so protection rests on a person spotting the problem before
 approving. The harness emits it as `auth_gated` in the `--corpus` report (counts,
-reason codes, and payload-free row ids; same run as the table above, 2026-09-06).
+reason codes, and payload-free row ids). Same corpus and built-ins as the table above,
+re-run 2026-09-06; every per-category number above re-measured unchanged.
 
 | Category | Action | Reason code that stopped it at `AUTH` | Rows |
 |---|---|---|---|
