@@ -149,6 +149,27 @@ _NEXT_AUTH = (
 _TUI_HINT = "; press w for detail"
 
 
+def _looks_like_path(token: str) -> bool:
+    """True if ``token`` should never be split mid-token by :func:`wrap_detail`.
+
+    A genuine filesystem path or URL is worth letting run past ``width`` — a
+    garbled path a reader can't copy is worse than one long line. This is a
+    *narrow* test, on purpose: only a backslash (a Windows path) or a slash on
+    a token that is not an option flag (a POSIX path or a `scheme://...` URL)
+    qualifies. An option like ``--foo/bar/baz-...`` merely *contains* a slash
+    and is not a path, so it stays breakable — that was the whole of #622.
+    """
+    if "\\" in token:
+        return True
+    return "/" in token and not token.startswith("-")
+
+
+def _force_break(token: str, width: int) -> list[str]:
+    """Hard-split an overlong non-path ``token`` into ``<= width`` chunks."""
+    step = max(1, width)
+    return [token[i : i + step] for i in range(0, len(token), step)]
+
+
 def next_step_line(verdict: str | None, *, tui_hint: bool = True) -> str | None:
     """The "Next" remedy line for a raw verdict string (or `None`/anything
     unrecognized, e.g. PASS) - `None` when there's nothing to act on.
@@ -334,12 +355,12 @@ def wrap_detail(
     ``"- name: "`` and want continuation lines to land under the text rather
     than under the marker.
 
-    A ``\\S+`` token containing ``\\`` or ``/`` (a Windows path, a POSIX path,
-    a URL) is never split mid-token, even if that makes a line run past
-    ``width`` — a garbled path is worse than a long line. ponytail: this
-    disables long-word breaking for every token, not just path-shaped ones;
-    upgrade to a token-aware wrapper if a non-path overlong word ever needs
-    force-breaking.
+    A path-shaped token (see :func:`_looks_like_path` — a Windows path, a
+    POSIX path, a URL) is never split mid-token, even if that makes a line run
+    past ``width``: a garbled path is worse than a long line. Every *other*
+    overlong token (a hash, an opaque id, or an option like ``--foo/bar/...``
+    that merely happens to contain a slash) is force-broken at the width
+    boundary so no rendered line overflows ``width`` (#622).
     """
     if width is None:
         width, _ = shutil.get_terminal_size(fallback=(100, 24))
@@ -357,4 +378,18 @@ def wrap_detail(
         break_long_words=False,
         break_on_hyphens=False,
     ) or [initial_indent]
-    return [line.replace("\x00", " ") for line in wrapped]
+    # `break_long_words=False` keeps paths whole but also lets any other
+    # overlong token overflow: such a token lands alone on its (over-width)
+    # line, so hard-break those unless the token is path-shaped.
+    broken: list[str] = []
+    for line in wrapped:
+        if len(line) <= width:
+            broken.append(line)
+            continue
+        pad = line[: len(line) - len(line.lstrip(" "))]
+        token = line[len(pad) :]
+        if _looks_like_path(token):
+            broken.append(line)
+            continue
+        broken.extend(pad + chunk for chunk in _force_break(token, width - len(pad)))
+    return [line.replace("\x00", " ") for line in broken]
