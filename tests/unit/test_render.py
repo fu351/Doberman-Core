@@ -287,6 +287,27 @@ def test_wrap_detail_never_breaks_inside_a_path_token():
     assert any(windows_path in line for line in lines)
 
 
+def test_wrap_detail_never_breaks_posix_relative_or_url_path_tokens():
+    tokens = [
+        "/var/lib/doberman/" + "nested-directory/" * 4 + "policy.yaml",
+        "src/doberman/" + "nested-directory/" * 4 + "render.py",
+        "https://example.com/" + "long-segment/" * 5 + "resource",
+    ]
+
+    for token in tokens:
+        lines = render.wrap_detail(f"target: {token}", indent=0, width=60)
+        assert any(token in line for line in lines)
+
+
+def test_wrap_detail_force_breaks_a_slash_token_that_is_not_a_path():
+    token = "--foo/bar/baz-some-extremely-long-" + "value" * 16
+    lines = render.wrap_detail(token, indent=0, width=60)
+
+    assert len(lines) > 1
+    assert all(len(line) <= 60 for line in lines)
+    assert "".join(lines) == token
+
+
 def test_next_step_line_known_verdicts_and_pass_has_none():
     # Shared by the `tui` browser's docked "Next" widget and `doberman log
     # --why` (round 4 design critique item 8) - one source of truth.
