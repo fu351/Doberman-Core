@@ -50,6 +50,36 @@ def test_benign_shell_abstains(tmp_path):
     assert codex.evaluate_pre(payload) is None  # raise-only: abstain on PASS
 
 
+@pytest.mark.guarantee("gitignored-delete-gate", host="codex")
+def test_unrecoverable_gitignored_delete_requires_auth(tmp_path):
+    """AN-1 on Codex: deleting unrecoverable gitignored data is gated.
+
+    The parity twin of ``test_unrecoverable_gitignored_delete_requires_auth`` in
+    ``test_hosthook_claude_pre.py``. Codex reaches the rule through its own
+    adapter and its own captured payload shape, so this proves the guarantee on
+    this host rather than inferring it from "same spine, should hold".
+
+    ``rm data/app.db`` is a local database file: gitignored by convention and
+    unrecoverable by git, which is exactly what AN-1's lexical operand gate
+    (``_UNRECOVERABLE_DELETE_GLOBS``) exists to catch. The AUTH must resolve to
+    ``deny`` here because no approval channel is reachable from a test process —
+    the fail-closed contract — and the reason must name the category without
+    echoing the operand.
+    """
+    payload = _load("pre_bash.json")
+    payload["cwd"] = str(tmp_path)
+    payload["tool_input"]["command"] = "rm data/app.db"
+    out = codex.evaluate_pre(payload)
+
+    assert out is not None, "an unrecoverable-data delete must not abstain"
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "[AUTH]" in reason, "this is a step-up, not an objective block"
+    # Redaction: the operand must never ride out in the host-visible reason.
+    assert "data/app.db" not in reason
+    assert "app.db" not in reason
+
+
 def test_windows_powershell_delete_is_gated(tmp_path):
     # Codex on Windows runs Bash tool calls through PowerShell; the destructive-
     # command rule's POSIX-only vocabulary (rm/dd/mkfs/git) previously let
