@@ -77,6 +77,7 @@ from doberman.storage.db import (
     active_elevations,
     claim_single_use,
     grant_elevation,
+    open_db,
     revoke_elevation,
 )
 from doberman.storage.log import recent_session_decisions, record_decision
@@ -953,8 +954,20 @@ async def decide_and_execute(
     """Decide whether to execute a tool call, then act on the verdict.
 
     This is THE chokepoint: normalize → decide → enforce. The downstream forward
-    happens only on a PASS decision or a successfully-authenticated AUTH.
+    happens only on a PASS decision or a successfully-authenticated AUTH. One
+    task-local SQLite connection spans the cycle; storage helpers still open
+    their own connection when called outside this boundary.
     """
+    async with open_db(REPO_ROOT):
+        return await _decide_and_execute(downstream, tool_name, arguments)
+
+
+async def _decide_and_execute(
+    downstream: ClientSession,
+    tool_name: str,
+    arguments: dict | None,
+) -> CallToolResult:
+    """Run one decision cycle inside :func:`decide_and_execute`'s DB scope."""
     action: SecurityObject = normalize(tool_name, arguments, {"repo_root": REPO_ROOT})
     now = datetime.now(timezone.utc)
     eid = entity_id(action.agent_role, REPO_ROOT)
