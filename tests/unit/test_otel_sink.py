@@ -68,6 +68,13 @@ def _build_record(**overrides: Any) -> dict[str, Any]:
         "target_path_class": "*.env",
         "source_context": "direct",
         "auth_required": False,
+        # #505: recorded locally, deliberately NOT exported. They are
+        # redaction-safe (a closed AuthPath enum; a bool), so this is a
+        # data-minimization choice rather than a redaction one — the sink ships
+        # what a remote collector needs, and "who approved this" is not that.
+        # Opting them in later is a one-line _ALLOWED_FIELDS change.
+        "auth_path": "none",
+        "human_confirmed": None,
         "elevation_id": None,
         "entity_id": None,
         "effects_file_count": None,

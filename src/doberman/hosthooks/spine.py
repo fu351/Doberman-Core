@@ -27,7 +27,7 @@ from doberman.engine.correlator import apply_correlator
 from doberman.engine.decision_engine import PASS_STUB, decide
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.taint_floor import apply_echo_tripwire, apply_taint_floor
-from doberman.models import Decision, EvalContext, SecurityObject, Verdict
+from doberman.models import AuthPath, Decision, EvalContext, SecurityObject, Verdict
 from doberman.policy.drift import acted_verdict
 from doberman.policy.modes import DEFAULT_MODE
 from doberman.policy.sources import effective_policy
@@ -136,7 +136,19 @@ def evaluate_action(
         # ORIGINAL (truthful) decision, outcome "executed" (a synthetic allow).
         # `off` softens the same way but is the silent, non-recording state; a
         # genuine PASS is never recorded (hot path — a DB write per pass floods).
-        record_history(decision, action, repo_root, session_id, auth_result="executed")
+        # A synthetic allow: `monitor` softened a real AUTH/BLOCK and nothing
+        # asked anyone. Recorded under its own path so an audit can separate
+        # "executed because a human approved" from "executed because
+        # enforcement was dialled down" — indistinguishable before #505.
+        record_history(
+            decision,
+            action,
+            repo_root,
+            session_id,
+            auth_result="executed",
+            auth_path=AuthPath.host_hook_monitor,
+            human_confirmed=False,
+        )
     return SpineResult(
         decision,
         action,
@@ -155,11 +167,21 @@ def record_history(
     session_id: str | None,
     *,
     auth_result: str,
+    auth_path: str = AuthPath.host_hook_objective,
+    human_confirmed: bool | None = None,
 ) -> None:
     """Best-effort: persist one decision row to the local decision log.
 
     Imports live INSIDE the try (unlike the pre-extraction helper) so even a
     lazy-import failure can never raise into a hook path.
+
+    ``auth_path``/``human_confirmed`` (#505) record WHO resolved the
+    authentication. This path is the reason those columns exist: its
+    ``auth_result`` vocabulary is only ``executed``/``blocked``, which cannot
+    tell "a human approved this" apart from "nothing ever asked a human" — the
+    ambiguity #399 turned on. The default is the objective path (no challenge
+    ran, no human involved), so only a caller that actually challenged has to
+    say otherwise.
     """
     try:
         import asyncio  # lazy — keeps module scope light
@@ -173,6 +195,8 @@ def record_history(
                 repo_root=repo_root,
                 auth_result=auth_result,
                 session_id=session_id,
+                auth_path=auth_path,
+                human_confirmed=human_confirmed,
             )
         )
     except Exception:  # noqa: BLE001,S110 — history must never break a hook path

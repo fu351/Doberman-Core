@@ -79,7 +79,13 @@ DB_FILE = "doberman.db"
 #: log, append-only, bounded by retention purge) and ``monitor_state`` (a per-reader
 #: cursor so each consumer can resume without replaying). Both are additive
 #: CREATE TABLE IF NOT EXISTS — no legacy migration needed.
-SCHEMA_VERSION = 16
+#: Version 17 adds ``decisions.auth_path`` and ``decisions.human_confirmed``
+#: (#505), so the log records which code path resolved an authentication and
+#: whether a person actually approved it — ``auth_result`` alone cannot say,
+#: because its vocabulary differs per writer. Additive ALTER on an existing
+#: table; fresh DBs get both from _SCHEMA below. Pre-migration rows keep NULL
+#: in both: "not recorded" is the truth for them, and it must not be guessed.
+SCHEMA_VERSION = 17
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -114,6 +120,13 @@ CREATE TABLE IF NOT EXISTS decisions (
     reason_codes_json TEXT,
     auth_required     INTEGER NOT NULL DEFAULT 0,
     auth_result       TEXT,
+    -- #505: auth_result says WHAT the outcome was; these two say WHO decided.
+    -- auth_path is a doberman.models.AuthPath value (which code path resolved
+    -- the decision); human_confirmed is 1/0/NULL for "a person approved it" /
+    -- "no person approved it" / "no challenge was involved". Both are NULL on
+    -- rows written before this migration -- unknown, never assumed.
+    auth_path         TEXT,
+    human_confirmed   INTEGER,
     elevation_id      TEXT,
     entity_id         TEXT,
     session_id        TEXT,
@@ -478,6 +491,24 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
             # (review fix for #556) — _add_column_if_missing tolerates the
             # loser's "already added by the winner".
             await _add_column_if_missing(conn, "decisions", column)
+    # #505: decisions gain ``auth_path`` (which code path resolved the auth) and
+    # ``human_confirmed`` (whether a person actually approved). Additive ALTER on
+    # an existing table; fresh DBs get both from _SCHEMA above.
+    #
+    # NO BACKFILL, deliberately. A pre-migration row genuinely does not record
+    # whether a human answered, and the whole point of the column is to make an
+    # unconfirmed AUTH visible — writing a guess into it (0 or 1) would defeat
+    # that on exactly the historical rows an audit of #399 would want to read.
+    # NULL means "not recorded", and every reader is written to say so.
+    #
+    # Re-read rather than reusing ``decision_cols``: the v15 block above may have
+    # just widened the table, and each additive migration must gate on the
+    # table's own current shape, not on a stale snapshot.
+    auth_cols = await _table_columns(conn, "decisions")
+    if auth_cols and "auth_path" not in auth_cols:
+        await _add_column_if_missing(conn, "decisions", "auth_path TEXT")
+    if auth_cols and "human_confirmed" not in auth_cols:
+        await _add_column_if_missing(conn, "decisions", "human_confirmed INTEGER")
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

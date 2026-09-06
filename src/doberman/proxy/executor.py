@@ -30,6 +30,7 @@ from doberman.auth.challenge import (
     AuthResult,
     AuthTier,
     Prompter,
+    human_answered,
     run_auth_challenge,
 )
 from doberman.auth.elevation import find_cover, scope_for_target
@@ -60,6 +61,7 @@ from doberman.engine.taint_floor import (
 )
 from doberman.models import (
     ActionType,
+    AuthPath,
     Decision,
     EvalContext,
     GuardrailResult,
@@ -746,6 +748,8 @@ async def _persist(
     auth_result: str | None = None,
     elevation_id: str | None = None,
     eid: str | None = None,
+    auth_path: str = AuthPath.none,
+    human_confirmed: bool | None = None,
 ) -> None:
     """Append one redacted row to the local decision log (best-effort).
 
@@ -753,6 +757,12 @@ async def _persist(
     or crash a decision that has already been enforced (logging is observational).
     ``eid`` (the keyed entity fingerprint) powers the per-entity step-up budget
     and revealed-preference learning.
+
+    ``auth_path``/``human_confirmed`` (#505) say WHO resolved the authentication,
+    which ``auth_result`` cannot express on its own. They default to
+    ``AuthPath.none``/``None`` — correct for every PASS/BLOCK row, which reaches
+    this function without an authentication having happened at all — so only the
+    call sites downstream of a challenge have to say anything.
     """
     try:
         await record_decision(
@@ -762,6 +772,8 @@ async def _persist(
             auth_result=auth_result,
             elevation_id=elevation_id,
             entity_id=eid,
+            auth_path=auth_path,
+            human_confirmed=human_confirmed,
         )
     except Exception:  # noqa: BLE001 — logging must never break the execution path
         _engine_logger.warning("decision log persist failed (action %s); continuing", action.id)
@@ -835,7 +847,20 @@ async def _handle_auth(
         method = auth_result.method if auth_result is not None else "error"
         if auth_result is not None and auth_result.approved:
             method = "denied"  # approved for a different action id is still a denial here
-        await _persist(decision, action, auth_result=method, eid=eid)
+        await _persist(
+            decision,
+            action,
+            auth_result=method,
+            eid=eid,
+            auth_path=AuthPath.proxy_challenge,
+            # Nothing was approved on this branch, so human_confirmed is False
+            # by definition — including when a person actively clicked "deny".
+            # That participation is not lost: `auth_result` already separates a
+            # human "denied" from "timeout"/"autodeny"/"error" (see
+            # challenge.NON_HUMAN_METHODS), and this column answers only the
+            # narrower question its name asks — did a person approve this.
+            human_confirmed=False,
+        )
         return _verdict_result(decision)
 
     # A satisfied role elevation grants a narrow, temporary permission first.
@@ -844,7 +869,18 @@ async def _handle_auth(
         scope = scope_for_target(action.target, root=REPO_ROOT)
         if scope is None:
             # No narrow scope can be formed (non-path / escapes root): refuse.
-            await _persist(decision, action, auth_result="denied", eid=eid)
+            # The human DID approve — Doberman is what refused — so
+            # human_confirmed stays true and auth_path names the elevation flow
+            # as the refusing party. Recording this as an unconfirmed denial
+            # would misattribute a system refusal to the person.
+            await _persist(
+                decision,
+                action,
+                auth_result="denied",
+                eid=eid,
+                auth_path=AuthPath.proxy_elevation,
+                human_confirmed=human_answered(auth_result.method),
+            )
             return _verdict_result(decision)
         try:
             grant = await grant_elevation(
@@ -857,7 +893,14 @@ async def _handle_auth(
             elevation_id = grant.id
         except Exception:  # noqa: BLE001 — a failed grant must fail closed
             _engine_logger.warning("elevation grant failed (action %s); denying", action.id)
-            await _persist(decision, action, auth_result="denied", eid=eid)
+            await _persist(
+                decision,
+                action,
+                auth_result="denied",
+                eid=eid,
+                auth_path=AuthPath.proxy_elevation,
+                human_confirmed=human_answered(auth_result.method),
+            )
             return _verdict_result(decision)
 
     # TOCTOU guard: re-decide with refreshed elevations. A change to BLOCK must
@@ -869,7 +912,13 @@ async def _handle_auth(
         log_action(action, redecision.final_verdict)
         await _revoke_granted_elevation(elevation_id)
         await _persist(
-            redecision, action, auth_result=auth_result.method, elevation_id=elevation_id, eid=eid
+            redecision,
+            action,
+            auth_result=auth_result.method,
+            elevation_id=elevation_id,
+            eid=eid,
+            auth_path=AuthPath.proxy_post_approval_gate,
+            human_confirmed=human_answered(auth_result.method),
         )
         return _verdict_result(redecision)
 
@@ -894,6 +943,8 @@ async def _handle_auth(
                 auth_result=auth_result.method,
                 elevation_id=elevation_id,
                 eid=eid,
+                auth_path=AuthPath.proxy_post_approval_gate,
+                human_confirmed=human_answered(auth_result.method),
             )
             return _verdict_result(diverged)
 
@@ -909,7 +960,13 @@ async def _handle_auth(
         denial = _single_use_unclaimable_decision(action)
         await _revoke_granted_elevation(elevation_id)
         await _persist(
-            denial, action, auth_result="unclaimable", elevation_id=elevation_id, eid=eid
+            denial,
+            action,
+            auth_result="unclaimable",
+            elevation_id=elevation_id,
+            eid=eid,
+            auth_path=AuthPath.proxy_post_approval_gate,
+            human_confirmed=human_answered(auth_result.method),
         )
         return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
@@ -926,7 +983,15 @@ async def _handle_auth(
         # the model even though the call itself was approved. Log only the block
         # — skip the baseline "allowed" observation, since the outcome is not
         # confirmed safe (mirrors the host-hook: one log row, the block).
-        await _persist(gate, action, auth_result="blocked", elevation_id=elevation_id, eid=eid)
+        await _persist(
+            gate,
+            action,
+            auth_result="blocked",
+            elevation_id=elevation_id,
+            eid=eid,
+            auth_path=AuthPath.proxy_post_approval_gate,
+            human_confirmed=human_answered(auth_result.method),
+        )
         return _verdict_result(gate)
     if not result.isError:
         artifact_gate = await _verify_artifact_digest(action, result)
@@ -935,12 +1000,24 @@ async def _handle_auth(
             # expected digest — withhold it from the agent, same shape as the
             # secret-scan gate above (one log row, the block, not a clean one).
             await _persist(
-                artifact_gate, action, auth_result="blocked", elevation_id=elevation_id, eid=eid
+                artifact_gate,
+                action,
+                auth_result="blocked",
+                elevation_id=elevation_id,
+                eid=eid,
+                auth_path=AuthPath.proxy_post_approval_gate,
+                human_confirmed=human_answered(auth_result.method),
             )
             return _verdict_result(artifact_gate)
         await _observe_allowed(action, eid, surprise_score)
     await _persist(
-        decision, action, auth_result=auth_result.method, elevation_id=elevation_id, eid=eid
+        decision,
+        action,
+        auth_result=auth_result.method,
+        elevation_id=elevation_id,
+        eid=eid,
+        auth_path=AuthPath.proxy_challenge,
+        human_confirmed=human_answered(auth_result.method),
     )
     return result
 

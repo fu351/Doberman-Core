@@ -66,7 +66,7 @@ from typing import TYPE_CHECKING, Any
 
 from doberman.config import load_message_tone
 from doberman.hosthooks import claude_code, hookio, singleflight, spine
-from doberman.models import Verdict
+from doberman.models import AuthPath, Verdict
 
 if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
     from doberman.auth.challenge import Prompter
@@ -324,15 +324,22 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any]:
                     repo_root=result.repo_root,
                     session_id=result.session_id,
                 )
+                auth_path = AuthPath.host_hook_challenge
+                human_confirmed = hookio.challenge_human_confirmed(host_out, auth_method)
             else:
                 host_out = hookio.decision_payload(result.decision, event=_EVENT_LABEL)
                 auth_method = "blocked"
+                # An objective BLOCK: no challenge ran, so nobody approved.
+                auth_path = AuthPath.host_hook_objective
+                human_confirmed = False
             spine.record_history(
                 result.decision,
                 result.action,
                 result.repo_root,
                 result.session_id,
                 auth_result=auth_method,
+                auth_path=auth_path,
+                human_confirmed=human_confirmed,
             )
             response = _from_host_output(host_out)
 
