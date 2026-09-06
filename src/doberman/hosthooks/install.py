@@ -12,6 +12,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from doberman.auth.challenge import DEFAULT_CHALLENGE_TIMEOUT_S
+
 # ---------------------------------------------------------------------------
 # Hook entry constants
 # ---------------------------------------------------------------------------
@@ -31,6 +33,16 @@ POST_COMMAND = "doberman hook post"
 #: Command registered as the SessionStart hook (prints the session summary).
 DASHBOARD_COMMAND = "doberman session-summary"
 
+#: Claude Code's per-hook timeout (seconds). Claude Code's own default is 600s,
+#: and its docs say a timed-out PreToolUse hook "doesn't block the tool call" -
+#: it fails OPEN, letting the call through the harness's normal permission flow.
+#: Doberman's own challenge ceiling (`DEFAULT_CHALLENGE_TIMEOUT_S`) is also 600s
+#: and starts a second or two later (the hook process has to start and import
+#: first), so the pin here must strictly outlast it or the harness kills the
+#: hook a moment before Doberman would have written its deny (#658). Mirrors
+#: `install_cursor.GATE_TIMEOUT_S`, which does the same for Cursor.
+HOOK_TIMEOUT_S = int(DEFAULT_CHALLENGE_TIMEOUT_S) + 60  # 660
+
 #: Sentinel substring used to detect Doberman-owned hook entries.
 _DOBERMAN_MARKER = "doberman hook "
 
@@ -41,12 +53,12 @@ _SESSION_SUMMARY_MARKER = "doberman session-summary"
 
 _PRE_ENTRY: dict[str, Any] = {
     "matcher": PRE_MATCHER,
-    "hooks": [{"type": "command", "command": PRE_COMMAND}],
+    "hooks": [{"type": "command", "command": PRE_COMMAND, "timeout": HOOK_TIMEOUT_S}],
 }
 
 _POST_ENTRY: dict[str, Any] = {
     "matcher": POST_MATCHER,
-    "hooks": [{"type": "command", "command": POST_COMMAND}],
+    "hooks": [{"type": "command", "command": POST_COMMAND, "timeout": HOOK_TIMEOUT_S}],
 }
 
 # SessionStart isn't scoped to a tool, so - unlike Pre/PostToolUse - this entry

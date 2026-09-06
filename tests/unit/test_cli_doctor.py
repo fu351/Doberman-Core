@@ -652,3 +652,77 @@ def test_doctor_integrity_plugin_only_codex_is_ok(
     r = _integrity(run_checks(str(integrity_env)))
     assert r.status is CheckStatus.OK
     assert r.detail == "nothing to verify (no hooks installed)"
+
+
+# ---------------------------------------------------------------------------
+# Hook timeout (#658): a Claude Code entry that does not outlast Doberman's
+# own challenge ceiling is a stale/weak install, not silently trusted - a
+# timed-out Claude Code hook fails OPEN at the harness.
+# ---------------------------------------------------------------------------
+
+
+def _hook_timeout(results: list[doctor_mod.CheckResult]) -> doctor_mod.CheckResult:
+    return next(r for r in results if r.name == "Hook timeout")
+
+
+def _write_claude_hooks(root: str, timeout) -> None:
+    """Write a Claude Code PreToolUse/PostToolUse Doberman entry with the
+    given `timeout` (omitted entirely when *timeout* is None) - simulates an
+    install from before #658, or one with a too-small pin."""
+    from doberman.hosthooks.install import POST_COMMAND, POST_MATCHER, PRE_COMMAND, PRE_MATCHER
+
+    pre_hook = {"type": "command", "command": PRE_COMMAND}
+    post_hook = {"type": "command", "command": POST_COMMAND}
+    if timeout is not None:
+        pre_hook["timeout"] = timeout
+        post_hook["timeout"] = timeout
+    settings = {
+        "hooks": {
+            "PreToolUse": [{"matcher": PRE_MATCHER, "hooks": [pre_hook]}],
+            "PostToolUse": [{"matcher": POST_MATCHER, "hooks": [post_hook]}],
+        }
+    }
+    write_settings(resolve_settings_path("local", root), settings)
+
+
+def test_doctor_hook_timeout_ok_when_nothing_installed(tmp_path):
+    root = str(tmp_path)
+    r = _hook_timeout(run_checks(root))
+    assert r.status is CheckStatus.OK
+    assert r.detail == "nothing to verify (no Claude Code hooks installed)"
+
+
+def test_doctor_hook_timeout_ok_when_pinned(tmp_path):
+    root = str(tmp_path)
+    _install_hooks(root)  # today's installer output - already pinned
+    r = _hook_timeout(run_checks(root))
+    assert r.status is CheckStatus.OK
+    assert "local" in r.detail
+
+
+def test_doctor_hook_timeout_fails_when_missing(tmp_path):
+    root = str(tmp_path)
+    _write_claude_hooks(root, timeout=None)
+    r = _hook_timeout(run_checks(root))
+    assert r.status is CheckStatus.FAIL
+    assert r.critical is True
+    assert "missing" in r.detail
+    assert "install-hooks" in r.detail
+
+
+def test_doctor_hook_timeout_fails_when_equal_to_the_challenge_ceiling(tmp_path):
+    # 600 == DEFAULT_CHALLENGE_TIMEOUT_S is not enough margin: it must be
+    # STRICTLY greater, or the harness can still kill the hook a moment
+    # before Doberman would have written its deny.
+    root = str(tmp_path)
+    _write_claude_hooks(root, timeout=600)
+    r = _hook_timeout(run_checks(root))
+    assert r.status is CheckStatus.FAIL
+    assert r.critical is True
+
+
+def test_doctor_hook_timeout_ok_when_strictly_above_the_ceiling(tmp_path):
+    root = str(tmp_path)
+    _write_claude_hooks(root, timeout=660)
+    r = _hook_timeout(run_checks(root))
+    assert r.status is CheckStatus.OK

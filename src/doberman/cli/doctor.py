@@ -194,17 +194,81 @@ def _check_hook_integrity(path: str) -> CheckResult:
     return CheckResult(name, CheckStatus.OK, "nothing to verify (no hooks installed)")
 
 
+def _check_hook_timeout(path: str) -> CheckResult:
+    """#658: a Claude Code PreToolUse/PostToolUse hook entry with no `timeout`
+    (or one too small) times out at Claude Code's own 600s default before
+    Doberman's own challenge ceiling (`DEFAULT_CHALLENGE_TIMEOUT_S`) elapses,
+    and a timed-out hook fails OPEN - the tool call proceeds unmediated. This
+    inspects the LIVE settings.json content per installed scope (mirrors
+    `_check_cursor_hooks`), not just "is something installed", so a stale
+    install from before this pin existed is reported instead of silently
+    trusted.
+    """
+    from doberman.auth.challenge import DEFAULT_CHALLENGE_TIMEOUT_S
+    from doberman.hosthooks.install import _is_doberman_group, hook_install_states, load_settings
+
+    name = "Hook timeout"
+    states = hook_install_states(path)
+    installed_scopes = [scope for scope, _p, ok in states if ok]
+    if not installed_scopes:
+        return CheckResult(
+            name, CheckStatus.OK, "nothing to verify (no Claude Code hooks installed)"
+        )
+
+    problems: list[str] = []
+    good_scopes: list[str] = []
+    for scope, settings_path, ok in states:
+        if not ok:
+            continue
+        try:
+            settings = load_settings(Path(settings_path))
+        except ValueError:
+            problems.append(f"{scope}: settings.json unreadable")
+            continue
+        hooks_section = settings.get("hooks") or {}
+        scope_ok = True
+        for event in ("PreToolUse", "PostToolUse"):
+            groups = hooks_section.get(event)
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                if not isinstance(group, dict) or not _is_doberman_group(group):
+                    continue
+                for h in group.get("hooks", []):
+                    timeout = h.get("timeout") if isinstance(h, dict) else None
+                    is_number = isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+                    if not is_number or timeout <= DEFAULT_CHALLENGE_TIMEOUT_S:
+                        scope_ok = False
+                        problems.append(
+                            f"{scope} {event}: timeout "
+                            f"{f'{timeout}s' if is_number else 'missing'} does not outlast the "
+                            f"{int(DEFAULT_CHALLENGE_TIMEOUT_S)}s challenge ceiling"
+                        )
+        if scope_ok:
+            good_scopes.append(scope)
+
+    if problems:
+        return CheckResult(
+            name,
+            CheckStatus.FAIL,
+            f"stale install ({'; '.join(problems)}) - run `doberman install-hooks` to restore",
+            critical=True,
+        )
+    return CheckResult(name, CheckStatus.OK, f"pinned ({', '.join(good_scopes)})")
+
+
 def _check_cursor_hooks(path: str) -> CheckResult:
     """Weak-registration + liveness self-check for the Cursor adapter (slice 2).
 
-    Unlike Claude/Codex, Cursor's own hook contract can fail OPEN (a crash or
-    timeout runs the tool) unless every gating entry carries ``failClosed:
-    true`` and a timeout that outlasts Doberman's approval dialog - so this
-    check inspects the LIVE hooks.json content, not just "is something
-    installed". A weak registration is a critical FAIL (Doberman may not
-    actually be gating); a missing sessionStart callback is only a WARN (it
-    means "unverified", not "unprotected" - `doctor` cannot always tell them
-    apart from the file alone).
+    Cursor's own hook contract can fail OPEN (a crash or timeout runs the tool)
+    unless every gating entry carries ``failClosed: true`` and a timeout that
+    outlasts Doberman's approval dialog - so this check inspects the LIVE
+    hooks.json content, not just "is something installed". A weak registration
+    is a critical FAIL (Doberman may not actually be gating); a missing
+    sessionStart callback is only a WARN (it means "unverified", not
+    "unprotected" - `doctor` cannot always tell them apart from the file
+    alone). Claude Code's own hook contract can *also* fail open on a timeout -
+    see :func:`_check_hook_timeout` for that check.
     """
     from doberman.hosthooks.install import load_settings
     from doberman.hosthooks.install_cursor import (
@@ -511,6 +575,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Hook command", True, lambda: _check_hook_command(path)),
         _safe_check("Hook integrity", True, lambda: _check_hook_integrity(path)),
         _safe_check("Cursor hooks", True, lambda: _check_cursor_hooks(path)),
+        _safe_check("Hook timeout", True, lambda: _check_hook_timeout(path)),
         _safe_check("Config", True, lambda: _check_config(path)),
         _safe_check("Decision DB", True, lambda: _check_db(path)),
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),
