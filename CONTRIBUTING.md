@@ -52,6 +52,19 @@ in CI. Their tests use fakes there, so exercise the real thing locally when you 
 `-n auto` runs the suite in parallel (pytest-xdist ships in the `dev` extra), the
 same way CI runs it.
 
+After the standalone suite, the Linux 3.12 leg installs and tests the example plugins separately:
+
+```bash
+set -euo pipefail
+for example in examples/plugin-*; do
+  python -m pip install -e "$example"
+  python -m pytest "$example/tests" --timeout=300
+done
+```
+
+Keep these suites out of root `testpaths`: core must pass without example plugins installed.
+Use a separate virtual environment for this command when continuing to test standalone core locally.
+
 CI also verifies that `doberman-core` builds and tests without the private
 enterprise package installed, then runs the same ruff, import-linter, pytest,
 and secret-scan workflow.
