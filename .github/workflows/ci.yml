@@ -119,6 +119,16 @@ jobs:
           ${{ runner.os == 'Linux' && 'xvfb-run -a -s "-screen 0 1280x800x24"' || '' }}
           pytest -n auto --dist loadgroup --max-worker-restart=0 --timeout=300 --durations=25 --durations-min=2.0
           ${{ matrix.coverage && '--cov=doberman --cov-report=term-missing --cov-fail-under=90' || '' }}
+      # Install examples only AFTER the standalone suite, on one Linux leg.
+      # Explicit paths keep their real entry-point tests out of root testpaths.
+      - name: Example plugin suites
+        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+        run: |
+          set -euo pipefail
+          for example in examples/plugin-*; do
+            python -m pip install -e "$example"
+            python -m pytest "$example/tests" --timeout=300
+          done
   package-smoke-test:
     name: package-smoke-test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
