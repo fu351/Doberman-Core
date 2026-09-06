@@ -48,6 +48,15 @@ reports both profiles plus the delta between them.
   and the operator metrics alongside `asr`, or you will overstate the protection.
   The [AUTH-gated breakdown](#where-the-strict-gap-sits-auth-gated-attacks-by-shape)
   shows which attack shapes stop at `AUTH` rather than `BLOCK`.
+- They measure tool calls. A hook command that the host itself runs on a
+  lifecycle event (session start, before or after a tool call) is not a tool
+  call and never reaches the decision engine, so a hook bound by a plugin
+  update or a settings edit sits outside every number here. HookPry
+  ([arXiv 2609.03884](https://arxiv.org/abs/2609.03884)) measured that vector
+  across seven harnesses, Claude Code and Codex CLI included: 77% verified
+  success, 0 of 1,000 runs blocked by any harness. A ledger of every installed
+  hook command, scanned with the shell rules, is a roadmap item.
+- The per-rule catalog of known gaps lives in [Known limitations](LIMITATIONS.md).
 
 ## Subjective-layer baseline separation (diagnostic)
 
@@ -150,7 +159,9 @@ true-positive rate per attack class) with no external dependency.
 - **Honest, not tuned.** The corpus is *not* filtered to cases the engine wins.
   Pure natural-language injection scores **TPR 0.0**: the objective layer is
   structurally blind to it (a provenance/subjective concern), and the corpus says
-  so rather than hiding it. Calibration also surfaced a real precision note:
+  so rather than hiding it. Small open classifiers reach F1 0.86 to 0.91 on
+  email and table indirect injection in Mozilla.ai's study (linked under Judge
+  agreement below); an optional classifier extra is a roadmap item. Calibration also surfaced a real precision note:
   reading an `.env.example` template over-blocks, because the secret-path rule
   matches `.env.*` fail-closed.
 - **Redaction + push-safety.** Reports hold counts, rates, category labels, and
@@ -200,6 +211,12 @@ This section measures, offline, whether it is even worth wiring in.
   structurally blind to natural-language injection for the exact same reason
   the deterministic layer is (see the corpus's `injection` row above); this
   bench cannot and does not claim to close that gap.
+- **External evidence for the advisory cap.** Mozilla.ai's 2026 study of open
+  guardrails ([blog post](https://blog.mozilla.ai/can-open-source-guardrails-really-protect-ai-agents/))
+  scored two judge models grading function calls on HammerBench at F1 0.09 to
+  0.50, Cohen's kappa 0.26 against the labels, with different scores on
+  identical inputs. Consistent with that, the judge here is advisory and never
+  decides a verdict alone.
 - **Opt-in, never a live call in CI.** Requires `ANTHROPIC_API_KEY` and
   `DOBERMAN_JUDGE_ENABLED=1` (the same three-way gate
   `HaikuJudgeAdjudicator.adjudicate()` itself enforces: installed, keyed, and
