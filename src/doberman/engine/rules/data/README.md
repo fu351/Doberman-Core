@@ -2,8 +2,8 @@
 
 Two static, offline JSON snapshots consumed only by
 `doberman.engine.rules.dependency_admission` (v1). They are point-in-time,
-refreshed per release, not a live feed. See `README.md`'s known-limitations
-section for the honest caveat shipped alongside this.
+refreshed per release, not a live feed. See `docs/LIMITATIONS.md` for the caveat shipped alongside
+this.
 
 ## known_malicious_packages.json
 

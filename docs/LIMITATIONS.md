@@ -404,6 +404,14 @@ with Codex's own `--dangerously-bypass-hook-trust` flag. And a control-plane pat
 from a shell variable, a glob pattern, or a `python -c` payload, isn't caught by this kind of static
 command-text check.
 
+A hook that a plugin update or a settings edit binds to a lifecycle event (session start, before or
+after a tool call) runs as the host itself, not as a tool call, so it never reaches the engine at
+all. HookPry ([arXiv 2609.03884](https://arxiv.org/abs/2609.03884)) measured that vector at 77%
+verified success across seven harnesses, Claude Code and Codex CLI included, with none of 1,000 runs
+blocked. Doberman's install manifest fingerprints only its own hook entries, so `doberman doctor`
+does not notice a foreign hook today. A ledger of every installed hook command, scanned with the
+shell rules, is a roadmap item.
+
 ## An optional AI judge exists for measurement only, not for live decisions
 
 Installing `pip install "doberman-core[judge]"`, setting an `ANTHROPIC_API_KEY`, and setting

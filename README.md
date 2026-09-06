@@ -213,7 +213,7 @@ over each labeled tool call, so the result is deterministic and needs no network
 A labeled detection corpus turns this into a per-category detection-quality measurement, and CI
 gates on any regression. Three more operator-supplied external suites (RedCode-Exec, MSB, and
 LLMail-Inject) are wired in the same way, alongside AgentDojo. Commands, methodology, and published
-results, including failure cases as well as wins, are in [Benchmarks](docs/BENCHMARKS.md).
+results are in [Benchmarks](docs/BENCHMARKS.md).
 
 ---
 
@@ -285,15 +285,6 @@ traces.jsonl` ([format and invariants](docs/BASELINE_SEEDING.md)).
 See [the roadmap](ROADMAP.md) for what's planned and in flight, the
 [GitHub board](https://github.com/users/fu351/projects/5) for day-to-day tracking, and
 [the changelog](CHANGELOG.md) for what has already shipped.
-
-### Known limitations
-
-Doberman is defense-in-depth, not a guarantee: every rule catches one specific kind of attack, and
-every rule has some way around it that a determined attacker could still find. Some gaps come from a
-deliberate trade-off against false positives (flagging something harmless); others are pieces of the
-design, like a runtime egress broker, that don't exist yet. None of them let an attacker turn a
-`BLOCK` into a silent `PASS`: the raise-only and fail-closed guarantees still hold everywhere. See
-[docs/LIMITATIONS.md](docs/LIMITATIONS.md) for the full, current list.
 
 ---
 
