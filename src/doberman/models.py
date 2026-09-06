@@ -202,6 +202,47 @@ if set(VERDICT_ORDER) != set(Verdict) or set(RISK_ORDER) != set(Risk):  # pragma
     raise RuntimeError("VERDICT_ORDER/RISK_ORDER must cover every enum member")
 
 
+class AuthPath(StrEnum):
+    """Which code path actually resolved a decision's authentication (#505).
+
+    The decision log's ``auth_result`` answers *what the outcome was* — an
+    approval method name, ``denied``, ``timeout``, ``executed``, ``blocked``.
+    It cannot answer *who decided*, because different writers spell overlapping
+    outcomes: the MCP proxy records a tier/method name, the host hooks record
+    only ``executed``/``blocked``, and the turn gate records a label of its own.
+    An audit that cannot tell a human-answered challenge apart from a synthetic
+    allow cannot detect a fail-open — which is exactly the gap #399 turned on.
+
+    These values name the *path*, never the outcome; pair one with
+    ``auth_result`` (the outcome) and ``human_confirmed`` (whether a person
+    actually approved) for the full picture. Values are stable identifiers
+    written to the local decision log — rename one only with a migration.
+    """
+
+    #: The MCP proxy ran the tiered challenge (``proxy.executor._handle_auth``).
+    proxy_challenge = "proxy_challenge"
+    #: The proxy's role-elevation flow resolved it (grant refused, or failed).
+    proxy_elevation = "proxy_elevation"
+    #: A proxy gate fired *after* a human approved: the TOCTOU re-decision, an
+    #: effect-set divergence, an output-secret hit, or an artifact-digest
+    #: mismatch. The approval was real; the action was withheld anyway.
+    proxy_post_approval_gate = "proxy_post_approval_gate"
+    #: A host hook ran the challenge (``hosthooks.hookio.resolve_auth_result``).
+    host_hook_challenge = "host_hook_challenge"
+    #: A host hook let the call through with no challenge at all — the
+    #: ``monitor`` enforcement softening's synthetic allow. This is the value
+    #: that makes an unchallenged AUTH visible instead of indistinguishable
+    #: from an approved one.
+    host_hook_monitor = "host_hook_monitor"
+    #: A host hook recorded an objective outcome with no challenge involved
+    #: (a ``BLOCK``, or a ``PASS`` written for history).
+    host_hook_objective = "host_hook_objective"
+    #: The turn gate resolved it (``turngate.hook``).
+    turn_gate = "turn_gate"
+    #: No authentication was involved — recorded for a non-``AUTH`` verdict.
+    none = "none"
+
+
 class ReasonCode(StrEnum):
     """Stable reason-code constants attached to every non-PASS decision.
 

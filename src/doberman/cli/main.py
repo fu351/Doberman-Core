@@ -2321,7 +2321,12 @@ def tune(
 # Columns from ``_DECISION_COLUMNS`` that ``log --jsonl`` emits in addition to the
 # six fields the human view shows. Every one is already redacted at write time by
 # ``build_record`` — no raw target, argument, or secret reaches the table at all.
-_JSONL_EXTRA_COLUMNS = ("id", "agent_role", "risk")
+# #505 adds auth_path/human_confirmed here deliberately: they are the columns
+# that say WHO resolved an authentication, and a decision log you cannot query
+# for "allowed without a human" cannot answer the question #399 raised. Both are
+# closed values (an AuthPath enum member; 1/0/NULL) and can never carry command
+# text, so exporting them widens the stream by nothing an operator must redact.
+_JSONL_EXTRA_COLUMNS = ("id", "agent_role", "risk", "auth_path", "human_confirmed")
 
 # Keep every action type in one column even when a new enum member outgrows the
 # historical 13-character values (network_request/package_install are 15).

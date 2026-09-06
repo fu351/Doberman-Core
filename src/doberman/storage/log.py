@@ -37,10 +37,11 @@ _PATH_ACTIONS = frozenset({ActionType.file_read, ActionType.file_write, ActionTy
 _INSERT_DECISION = (
     "INSERT INTO decisions "
     "(ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
-    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
+    "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
     "effects_hits_git, effects_hits_outside_repo, effects_digest_fp) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _INSERT_SHADOW = (
@@ -57,7 +58,8 @@ _UPSERT_FINGERPRINT = (
 
 _SELECT_DECISIONS = (
     "SELECT id, ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
-    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
+    "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
     "effects_hits_git, effects_hits_outside_repo, effects_digest_fp "
     "FROM decisions ORDER BY id DESC"
@@ -67,7 +69,8 @@ _SELECT_DECISIONS = (
 # feed poll (doberman.dash): "give me what's new since the last row I saw".
 _SELECT_DECISIONS_SINCE = (
     "SELECT id, ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
-    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
+    "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
     "effects_hits_git, effects_hits_outside_repo, effects_digest_fp "
     "FROM decisions WHERE id > ? ORDER BY id ASC"
@@ -103,6 +106,8 @@ _DECISION_COLUMNS = [
     "reason_codes_json",
     "auth_required",
     "auth_result",
+    "auth_path",
+    "human_confirmed",
     "elevation_id",
     "entity_id",
     "session_id",
@@ -192,6 +197,8 @@ def build_record(
     now: datetime,
     entity_id: str | None = None,
     session_id: str | None = None,
+    auth_path: str | None = None,
+    human_confirmed: bool | None = None,
 ) -> dict:
     """Build the single redacted record persisted and handed to every sink.
 
@@ -200,6 +207,14 @@ def build_record(
     revealed-preference learning. ``session_id`` is the host harness's opaque
     session identifier (HK.5.1) — a UUID, not a secret — used to correlate the
     calls of one agent session for the multi-step taint floor.
+
+    ``auth_path`` (a :class:`~doberman.models.AuthPath` value) and
+    ``human_confirmed`` record *who resolved* an authentication, which
+    ``auth_result`` alone cannot express because each writer spells its outcomes
+    differently (#505). Both default to ``None`` — a caller that does not know
+    records "not recorded" rather than a guess, and a caller that knows no auth
+    was involved passes ``AuthPath.none``. Neither field ever carries command
+    text: ``auth_path`` is a closed enum and ``human_confirmed`` is a bool.
     """
     record = {
         "ts": now.isoformat(),
@@ -214,6 +229,8 @@ def build_record(
         "reason_codes": [rc.value for rc in decision.reason_codes],
         "auth_required": decision.final_verdict.value == "AUTH",
         "auth_result": auth_result,
+        "auth_path": auth_path,
+        "human_confirmed": human_confirmed,
         "elevation_id": elevation_id,
         "entity_id": entity_id,
         "session_id": session_id,
@@ -232,6 +249,8 @@ async def record_decision(
     now: datetime | None = None,
     entity_id: str | None = None,
     session_id: str | None = None,
+    auth_path: str | None = None,
+    human_confirmed: bool | None = None,
 ) -> None:
     """Persist one redacted decision row and fan it out to sinks (best-effort).
 
@@ -248,6 +267,8 @@ async def record_decision(
             now=now or datetime.now(timezone.utc),
             entity_id=entity_id,
             session_id=session_id,
+            auth_path=auth_path,
+            human_confirmed=human_confirmed,
         )
     except Exception:  # noqa: BLE001 — the decision log must never break execution
         logger.warning("decision log: could not build record for action %s", decision.action_id)
@@ -270,6 +291,10 @@ async def record_decision(
                     json.dumps(record["reason_codes"]),
                     int(record["auth_required"]),
                     record["auth_result"],
+                    record["auth_path"],
+                    # bool -> 1/0 for SQLite, but None stays None: "not recorded"
+                    # is a third state and must never collapse into 0 ("no human").
+                    None if record["human_confirmed"] is None else int(record["human_confirmed"]),
                     record["elevation_id"],
                     record["entity_id"],
                     record["session_id"],

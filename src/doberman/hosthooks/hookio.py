@@ -70,6 +70,36 @@ def deny(event: str, reason: str = FAILSAFE_REASON) -> dict[str, Any]:
     return hook_output(event, "deny", reason)
 
 
+def payload_allows(hook_payload: dict[str, Any]) -> bool:
+    """Whether a payload built by :func:`hook_output` lets the call through.
+
+    Fails toward "did not allow" for any shape it does not recognize, so a
+    malformed or foreign payload can never be read as an approval.
+    """
+    specific = hook_payload.get("hookSpecificOutput") if hook_payload else None
+    if not isinstance(specific, dict):
+        return False
+    return specific.get("permissionDecision") == "allow"
+
+
+def challenge_human_confirmed(hook_payload: dict[str, Any], method: str | None) -> bool:
+    """Whether a host-hook challenge was approved *by a person* (#505).
+
+    Both halves are required, and each rules out a different way the decision
+    log used to read as a human approval when it was not one: the payload must
+    actually allow (a denial is not a confirmation), and the resolving method
+    must be one a human answers (which excludes ``timeout``, ``autodeny``,
+    approval memory, and a channel ``error``).
+
+    This is the host-hook path's answer to #399, where an ``AUTH`` recorded
+    ``auth=executed`` with nobody having seen a dialog. Such a row now records
+    ``human_confirmed = 0`` and is greppable.
+    """
+    from doberman.auth.challenge import human_answered
+
+    return payload_allows(hook_payload) and human_answered(method)
+
+
 def format_reason(decision: Decision, verdict_label: str) -> str:
     """The redaction-safe reason line (verdict + explanation + reason codes + action
     id). Built only from already-safe decision fields — never a raw argument value."""

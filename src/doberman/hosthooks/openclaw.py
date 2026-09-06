@@ -74,7 +74,7 @@ from typing import Any
 
 from doberman.branding import DOG
 from doberman.hosthooks import spine
-from doberman.models import Decision, Risk, SecurityObject, Verdict
+from doberman.models import AuthPath, Decision, Risk, SecurityObject, Verdict
 
 #: Tool names that carry no path/command/network surface to gate at all - an
 #: internal status call, never a mutation, execution, or egress. Deliberately
@@ -202,6 +202,8 @@ def _record_history(
     session_id: str | None,
     *,
     auth_result: str,
+    auth_path: str = AuthPath.host_hook_objective,
+    human_confirmed: bool | None = None,
 ) -> None:
     """Best-effort: persist one decision row to the local decision log.
 
@@ -214,7 +216,15 @@ def _record_history(
     recording failure must never affect the hook's return value (delegates to
     hosthooks.spine, W1.0a — see that module for the actual best-effort write).
     """
-    spine.record_history(decision, action, repo_root, session_id, auth_result=auth_result)
+    spine.record_history(
+        decision,
+        action,
+        repo_root,
+        session_id,
+        auth_result=auth_result,
+        auth_path=auth_path,
+        human_confirmed=human_confirmed,
+    )
 
 
 def evaluate_before_tool_call(payload: dict[str, Any]) -> dict[str, Any]:
@@ -275,6 +285,12 @@ def evaluate_before_tool_call(payload: dict[str, Any]) -> dict[str, Any]:
             result.repo_root,
             result.session_id,
             auth_result="blocked",
+            # An objective BLOCK. This adapter never records an AUTH at all —
+            # OpenClaw resolves those asynchronously through its own /approve
+            # flow, outside this process (see this function's docstring) — so
+            # host_hook_challenge is deliberately unreachable here.
+            auth_path=AuthPath.host_hook_objective,
+            human_confirmed=False,
         )
         return out
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error

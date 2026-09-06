@@ -26,11 +26,18 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from doberman.auth.challenge import TIMEOUT_METHOD, AuthResult, Prompter, run_auth_challenge
+from doberman.auth.challenge import (
+    TIMEOUT_METHOD,
+    AuthResult,
+    Prompter,
+    human_answered,
+    run_auth_challenge,
+)
 from doberman.config import load_message_tone
 from doberman.engine.decision_engine import TurnGuardrail, decide_turn
 from doberman.models import (
     ActionType,
+    AuthPath,
     Decision,
     EvalContext,
     GuardrailResult,
@@ -165,6 +172,11 @@ async def _enforce(
             repo_root=repo_root,
             stage="turn_auth",
             auth_result=label,
+            auth_path=AuthPath.turn_gate,
+            # Approval alone is not human confirmation: approval memory can
+            # satisfy a challenge with nobody present, and it must not be
+            # recorded as though somebody was.
+            human_confirmed=approved and human_answered(result.method),
         )
         return TurnGateOutcome(approved, Verdict.AUTH, decision, _AUTH_NOTES[label])
 
@@ -207,6 +219,8 @@ async def _handle_repeat(
             repo_root=repo_root,
             stage="turn_repeat_approved",
             auth_result="approved",
+            auth_path=AuthPath.turn_gate,
+            human_confirmed=human_answered(result.method),
         )
         return TurnGateOutcome(True, Verdict.AUTH, decision, "repeat approved (released)")
 
@@ -220,7 +234,15 @@ async def _handle_repeat(
     decision = _decision_from_result(turn, reblock, when)
     label = _auth_result_label(result, approved=False)
     await record_turn_decision(
-        turn, decision, repo_root=repo_root, stage="turn_repeat_denied", auth_result=label
+        turn,
+        decision,
+        repo_root=repo_root,
+        stage="turn_repeat_denied",
+        auth_result=label,
+        auth_path=AuthPath.turn_gate,
+        # Nothing was approved here, so nobody confirmed anything; `auth_result`
+        # still separates a human "denied" from a silent "timeout".
+        human_confirmed=False,
     )
     note = "repeat timed out (blocked)" if label == "timeout" else "repeat denied (blocked)"
     return TurnGateOutcome(False, Verdict.BLOCK, decision, note)

@@ -92,6 +92,35 @@ AUTODENY_METHOD = "autodeny"
 
 MEMORY_METHOD = "soft_confirm+memory"
 
+#: Methods that resolve a challenge with **no human answering anything** (#505).
+#: Kept here, beside the constants it names, so the decision log's
+#: ``human_confirmed`` column and this module can never drift apart: adding a
+#: new machine-resolved method without listing it here would silently start
+#: recording it as a human approval, which is the exact misreading the column
+#: exists to prevent.
+#:
+#: ``"denied"`` is deliberately NOT here — a denial is a human answering "no",
+#: and ``human_answered`` reports *participation*, not the verdict.
+NON_HUMAN_METHODS = frozenset({TIMEOUT_METHOD, AUTODENY_METHOD, MEMORY_METHOD, "error"})
+
+
+def human_answered(method: str | None) -> bool:
+    """Whether ``method`` means a person actually answered a challenge channel.
+
+    This is *participation*, not approval. The decision log's ``human_confirmed``
+    column asks the narrower question its name implies — did a person approve —
+    so a caller derives it as ``approved and human_answered(method)``; the
+    outcome itself stays in ``auth_result``, which already separates a human
+    "denied" from "timeout"/"autodeny"/"error".
+
+    Conservative by construction: an unknown or missing method reports False.
+    A new machine-resolved path therefore reads as "no human" until it is
+    deliberately classified, rather than inflating the human-confirmation
+    signal an auditor relies on.
+    """
+    return bool(method) and method not in NON_HUMAN_METHODS
+
+
 # A memory hit must never soften destructive, critical, exfiltration, opaque,
 # role-boundary, protected-path, history-rewriting, or correlated-destruction work.
 APPROVAL_MEMORY_EXCLUSIONS = {
