@@ -264,6 +264,7 @@ class _RowResultLike(Protocol):
     """
 
     verdict: Verdict
+    reason_codes: tuple[str, ...]
 
     @property
     def mitigated(self) -> bool: ...
@@ -292,10 +293,48 @@ def _category_block(results: list[_RowResultLike]) -> dict:
         "n_benign": n_benign,
         "detected": detected,
         "missed": n_attack - detected,
+        "auth_gated": detected - blocked,
         "tpr": round(_safe_div(detected, n_attack), 6),
         "tpr_strict": round(_safe_div(blocked, n_attack), 6),
         "fpr": round(_safe_div(benign_flagged, n_benign), 6),
         "hard_fpr": round(_safe_div(benign_blocked, n_benign), 6),
+    }
+
+
+def _auth_gated_block(results: list[_RowResultLike]) -> dict:
+    """Attack rows that stopped at ``AUTH`` (not ``BLOCK``), grouped by shape.
+
+    These are the attacks the strict score refuses to credit: protection rests on a
+    person spotting the problem before approving. Shape = (category, action_type,
+    sorted de-duplicated reason codes), so a reader can see *which* kinds of attack
+    lean on the prompt. Redaction-safe: labels, reason-code constants, counts, and payload-free
+    row ids only.
+    """
+    gated = [r for r in results if r.row.is_attack and r.verdict is Verdict.AUTH]  # type: ignore[attr-defined]
+    mitigated = sum(1 for r in results if r.row.is_attack and r.mitigated)  # type: ignore[attr-defined]
+    by_shape: dict[tuple[str, str, tuple[str, ...]], list[str]] = defaultdict(list)
+    for r in gated:
+        key = (
+            r.row.kind,  # type: ignore[attr-defined]
+            str(r.row.surfaces["action_type"]),  # type: ignore[attr-defined]  # schema-required
+            tuple(sorted(set(r.reason_codes))),
+        )
+        by_shape[key].append(r.row.id)  # type: ignore[attr-defined]
+    shapes = [
+        {
+            "category": kind,
+            "action_type": action_type,
+            "reason_codes": list(codes),
+            "n": len(ids),
+            "ids": sorted(ids),
+        }
+        for (kind, action_type, codes), ids in by_shape.items()
+    ]
+    shapes.sort(key=lambda s: (-s["n"], s["category"], s["action_type"], s["reason_codes"]))
+    return {
+        "n": len(gated),
+        "share_of_mitigated": round(_safe_div(len(gated), mitigated), 6),
+        "by_shape": shapes,
     }
 
 
@@ -312,6 +351,10 @@ def corpus_metrics(results: Iterable[_RowResultLike]) -> dict:
       BLOCK / benign.
     * **precision** — attack-flagged / (attack-flagged + benign-flagged): of every
       action the engine flagged, the fraction that were real attacks.
+    * **auth_gated** — attack rows that stopped at ``AUTH`` rather than ``BLOCK``
+      (the gap between TPR and tpr_strict), with a per-shape breakdown so the
+      reader can see where protection still rests on a human answering the prompt.
+      Also surfaced per category as ``by_category[<kind>]["auth_gated"]``.
     * **floor_violations / forbidden_violations** — rows that broke their raise-only
       floor or their FP guard. Both MUST be 0 for the CI gate to pass; the ids let
       a failure name the offending rows without leaking payload.
@@ -339,6 +382,7 @@ def corpus_metrics(results: Iterable[_RowResultLike]) -> dict:
         "floor_violations": sorted(floor_violations),
         "forbidden_violations": sorted(forbidden_violations),
         "by_category": {kind: _category_block(rows) for kind, rows in sorted(by_kind.items())},
+        "auth_gated": _auth_gated_block(results),
     }
 
 

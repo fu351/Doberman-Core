@@ -265,8 +265,11 @@ detection *quality* per category. It is a flat JSONL fixture
   must stay `PASS`).
 
 `--corpus` reports **TPR** (mitigation = `AUTH` or `BLOCK`), **tpr_strict**
-(`BLOCK` only), **FPR**, **precision**, and the ids of any row that broke its
-floor or guard — per category and overall. `tests/integration/test_corpus_gate.py`
+(`BLOCK` only), **FPR**, **precision**, the ids of any row that broke its
+floor or guard — per category and overall — and **auth_gated**: the attack rows
+that stopped at `AUTH` rather than `BLOCK`, broken down by shape (category,
+action type, reason codes) so a reader can see where protection rests on a human
+answering the prompt. `tests/integration/test_corpus_gate.py`
 runs the deterministic tier in CI and fails on any violation. Regenerate + recalibrate
 against the live engine with `python -m tests.corpus._generate` (a dev tool; the
 shipped JSONL is a static fixture — **adding a labeled row needs no harness
