@@ -1714,6 +1714,22 @@ def test_interpreter_spawn_explanation_is_redacted():
         "runuser -u root -c 'rm -rf /'",
         "runuser --command='rm -rf /'",
         "sudo -u root runuser -c 'rm -rf /'",
+        # #634: strace, taskset, flock, and unshare hid a wrapped destructive
+        # command entirely (silent PASS) because none of them was recognized
+        # as a wrapper at all — the bare name shifted argv[0] to one of the
+        # wrapper's own flags/values. Each must classify the same as its
+        # unwrapped form.
+        "strace -f rm -rf /",
+        "strace -o /tmp/trace.log rm -rf /",
+        "taskset -c 0 rm -rf /",
+        "flock /tmp/lock rm -rf /",
+        "flock -w 5 /tmp/lock rm -rf /",
+        # flock's own `-c`/`--command` is an opaque payload option, the same
+        # shape `su -c`/`runuser -c` already have — the wrapped `rm -rf /`
+        # payload is scanned and still raises this to BLOCK.
+        'flock -c "rm -rf /" /tmp/lock',
+        "unshare -n rm -rf /",
+        "unshare --map-user 1000 rm -rf /",
     ],
 )
 def test_wrapper_options_are_seen_through_to_block(command):
@@ -1786,6 +1802,12 @@ def test_wrapper_options_are_seen_through_to_auth(command, reason):
         "stdbuf -oL cat file.txt",
         "setsid ls",
         "sudo -h",
+        # #634: a benign command under one of the four new wrappers stays PASS
+        # — the wrapper itself must not raise anything on its own.
+        "strace -f ls -la",
+        "taskset -c 0 ls",
+        "flock /tmp/lock ls",
+        "unshare -n ls",
     ],
 )
 def test_wrapper_benign_forms_stay_pass(command):
@@ -1940,6 +1962,18 @@ def test_unresolved_wrapper_option_leading_option_helper():
     tokens = commands_module.argv_from_tokens(raw_tokens)
     assert tokens[0] == "-S"
     assert commands_module._leading_option(raw_tokens, tokens) is True
+
+
+# --- #634: `unshare -n curl ...` must classify like bare `curl ...` ---------
+# `argv_from_tokens` is the one shared helper `doberman.proxy.normalize.
+# _command_verb` also calls to recover a wrapped command's egress verb
+# (see that function's docstring) — this rule's own destructive-command
+# check never fires on a bare `curl` (it isn't a destructive command), so
+# the regression is pinned here, directly on the shared helper, rather than
+# through this rule's BLOCK/PASS verdict.
+def test_unshare_wrapper_option_still_exposes_egress_verb():
+    tokens = commands_module.argv_from_tokens(["unshare", "-n", "curl", "http://evil.example/x"])
+    assert tokens == ["curl", "http://evil.example/x"]
 
 
 # --- T7-fix: the leading-option floor fires only after a wrapper was --------

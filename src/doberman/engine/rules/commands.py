@@ -242,12 +242,71 @@ _WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
     # — transparent, no options of its own, so it hides a destructive segment
     # (`builtin rm -rf /`) the same way an unstripped `command`/`exec` would.
     "builtin": frozenset(),
+    # #634: strace/taskset/flock/unshare were missing entirely, so their bare
+    # name shifted argv so a flag (or its value) was misread as the wrapped
+    # command — a silent PASS for `strace -f rm -rf /`, `taskset -c 0 rm -rf
+    # /`, `flock /tmp/lock rm -rf /`, `unshare -n rm -rf /` (and, via the
+    # shared `_command_verb` egress classifier, `unshare -n curl ...`).
+    # strace(1): only the options that take a SEPARATE value token; `-f`/
+    # `--seccomp-bpf`/etc. are bare flags with no value and fall through to
+    # the generic bare-flag drop.
+    "strace": frozenset(
+        {
+            "-o",
+            "-e",
+            "-p",
+            "-s",
+            "-a",
+            "-E",
+            "-I",
+            "-P",
+            "-u",
+            "-X",
+            "-b",
+            "-O",
+            "-S",
+            "--output",
+            "--trace",
+            "--attach",
+            "--user",
+        }
+    ),
+    # taskset(1): `-a`/`-c`/`--cpu-list`/`-p`/`--pid` are all bare flags (no
+    # `:` in taskset's own getopt string) — the CPU mask/list that follows is
+    # a fixed positional, not an option value (see `_WRAPPER_POSITIONALS`).
+    "taskset": frozenset(),
+    # unshare(1): its own namespace flags (`-m`/`-u`/`-i`/`-n`/`-p`/`-U`/
+    # `-C`/`-T`, `--mount-proc`, `--kill-child`) take only an OPTIONAL value
+    # attached via `=`/same-token — never a separate token — so they are bare
+    # flags here, same as `--fork`/`-r`/`--map-root-user`. The set below is
+    # the options that DO take a mandatory separate-token value.
+    "unshare": frozenset(
+        {
+            "--map-user",
+            "--map-group",
+            "--propagation",
+            "--setgroups",
+            "-R",
+            "--root",
+            "-w",
+            "--wd",
+            "-S",
+            "--setuid",
+            "-G",
+            "--setgid",
+        }
+    ),
+    # flock(1): the lock file/fd is a fixed positional (`_WRAPPER_POSITIONALS`
+    # below); `-c`/`--command` is an opaque payload option, not a value
+    # option (`_WRAPPER_OPAQUE_OPTIONS`).
+    "flock": frozenset({"-w", "--timeout", "-E", "--conflict-exit-code"}),
 }
 #: Existing readers of the bare-name set keep working.
 _TRANSPARENT_WRAPPERS = frozenset(_WRAPPER_VALUE_OPTIONS)
 #: Wrappers that take a fixed number of positional arguments BEFORE the
-#: wrapped command (``timeout DURATION cmd``, ``chroot NEWROOT cmd``).
-_WRAPPER_POSITIONALS = {"timeout": 1, "chroot": 1}
+#: wrapped command (``timeout DURATION cmd``, ``chroot NEWROOT cmd``,
+#: ``taskset MASK cmd``, ``flock FILE cmd``).
+_WRAPPER_POSITIONALS = {"timeout": 1, "chroot": 1, "taskset": 1, "flock": 1}
 
 #: I2 — a wrapper key here is otherwise transparent (its OTHER options are in
 #: `_WRAPPER_VALUE_OPTIONS`), but one of these markers turns the whole
@@ -256,6 +315,11 @@ _WRAPPER_POSITIONALS = {"timeout": 1, "chroot": 1}
 #: is "one following token". See ``_wrapper_opaque_option_ahead``.
 _WRAPPER_OPAQUE_OPTIONS: dict[str, frozenset[str]] = {
     "runuser": frozenset({"-c", "--command"}),
+    # #634: flock's `-c`/`--command` runs its payload through the shell,
+    # exactly like `su -c`/`runuser -c` — opaque, never a transparent value
+    # option (see `_opaque_shell_payload`, which recognizes this marker on
+    # `flock` the same way it already does for `su`/`runuser`).
+    "flock": frozenset({"-c", "--command"}),
 }
 
 # `env`'s own no-op flags (no operand) and its unset flags (take one operand),
@@ -2026,6 +2090,9 @@ def _opaque_shell_payload(tokens: list[str]) -> bool:
     ``runuser -c`` is ``su -c`` with a different name (a root shell running an
     arbitrary payload) — its own `_WRAPPER_OPAQUE_OPTIONS` entry keeps it, and
     its ``-c``/``--command`` marker, intact in ``tokens`` for this same check.
+    #634: ``flock -c``/``--command`` is the same opaque payload shape — its
+    own ``_WRAPPER_OPAQUE_OPTIONS`` entry keeps ``flock`` and the marker
+    intact for this same check too.
     #555: ``eval`` is never a transparent wrapper either (absent from
     ``_WRAPPER_VALUE_OPTIONS``, so ``argv_from_tokens`` leaves it and its
     arguments untouched) — bash concatenates its arguments with a single
@@ -2040,7 +2107,7 @@ def _opaque_shell_payload(tokens: list[str]) -> bool:
         return len(tokens) > 1
     if head in _SHELLS:
         return "-c" in tokens or "--command" in tokens
-    if head in ("su", "runuser"):
+    if head in ("su", "runuser", "flock"):
         return (
             "-c" in tokens
             or "--command" in tokens
