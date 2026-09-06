@@ -16,8 +16,10 @@ import pytest
 from typer.testing import CliRunner
 
 import doberman.cli.main as cli_module
+from doberman.auth.challenge import DEFAULT_CHALLENGE_TIMEOUT_S
 from doberman.hosthooks.install import (
     DASHBOARD_COMMAND,
+    HOOK_TIMEOUT_S,
     POST_COMMAND,
     POST_MATCHER,
     PRE_COMMAND,
@@ -143,6 +145,56 @@ class TestMergeDobermanHooks:
         snapshot = copy.deepcopy(existing)
         merge_doberman_hooks(existing)
         assert existing == snapshot
+
+
+# ---------------------------------------------------------------------------
+# HOOK_TIMEOUT_S (#658): the Claude Code hook pin must strictly outlast
+# Doberman's own challenge ceiling, or a timed-out hook fails open at the
+# harness before Doberman ever writes its deny.
+# ---------------------------------------------------------------------------
+
+
+class TestHookTimeoutPin:
+    def test_pin_strictly_outlasts_the_challenge_ceiling(self):
+        """Pins the RELATIONSHIP, not just a literal value: if either constant
+        moves (the challenge ceiling raised, or this margin trimmed) without
+        the other keeping pace, this must fail CI rather than silently
+        reopening the #658 race."""
+        assert HOOK_TIMEOUT_S > DEFAULT_CHALLENGE_TIMEOUT_S
+
+    def test_both_entries_carry_the_pin(self):
+        result = merge_doberman_hooks({})
+        pre_group = next(g for g in result["hooks"]["PreToolUse"] if _is_doberman_group(g))
+        post_group = next(g for g in result["hooks"]["PostToolUse"] if _is_doberman_group(g))
+        assert pre_group["hooks"][0]["timeout"] == HOOK_TIMEOUT_S
+        assert post_group["hooks"][0]["timeout"] == HOOK_TIMEOUT_S
+
+    def test_merge_replaces_an_old_entry_with_no_timeout(self):
+        """The idempotent replace in `merge_doberman_hooks` keys on the command
+        string, so re-running install-hooks over a pre-#658 install (same
+        matcher/command, no `timeout`) must swap in the new pinned entry
+        rather than leaving the stale one or duplicating it."""
+        old_settings = {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": PRE_MATCHER, "hooks": [{"type": "command", "command": PRE_COMMAND}]}
+                ],
+                "PostToolUse": [
+                    {
+                        "matcher": POST_MATCHER,
+                        "hooks": [{"type": "command", "command": POST_COMMAND}],
+                    }
+                ],
+            }
+        }
+        result = merge_doberman_hooks(old_settings)
+
+        pre_groups = [g for g in result["hooks"]["PreToolUse"] if _is_doberman_group(g)]
+        post_groups = [g for g in result["hooks"]["PostToolUse"] if _is_doberman_group(g)]
+        assert len(pre_groups) == 1
+        assert len(post_groups) == 1
+        assert pre_groups[0]["hooks"][0]["timeout"] == HOOK_TIMEOUT_S
+        assert post_groups[0]["hooks"][0]["timeout"] == HOOK_TIMEOUT_S
 
 
 # ---------------------------------------------------------------------------

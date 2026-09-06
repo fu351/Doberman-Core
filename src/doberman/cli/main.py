@@ -1549,6 +1549,7 @@ def doctor(
         "Host hooks": "Hooks",
         "Hook command": "Hooks",
         "Hook integrity": "Hooks",
+        "Hook timeout": "Hooks",
         "Config": "Policy",
         "Enforcement": "Policy",
         "Policy version": "Policy",

@@ -181,13 +181,13 @@ On Claude Code it writes this, or add it by hand:
     "PreToolUse": [
       {
         "matcher": "Bash|Edit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*",
-        "hooks": [{ "type": "command", "command": "doberman hook pre" }]
+        "hooks": [{ "type": "command", "command": "doberman hook pre", "timeout": 660 }]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Bash|Edit|Write|NotebookEdit|WebFetch|WebSearch|Read|Glob|Grep|mcp__.*",
-        "hooks": [{ "type": "command", "command": "doberman hook post" }]
+        "hooks": [{ "type": "command", "command": "doberman hook post", "timeout": 660 }]
       }
     ],
     "SessionStart": [
@@ -198,6 +198,9 @@ On Claude Code it writes this, or add it by hand:
   }
 }
 ```
+
+Claude Code's own per-hook timeout defaults to 600s and a timed-out hook fails open (the tool call
+proceeds unmediated), so the `timeout` pin above lets Doberman deny first.
 
 **The pre-hook.** `doberman hook pre` reads the tool call on stdin and runs Doberman's
 deterministic objective floor: path confinement, destructive-command detection, checks for
