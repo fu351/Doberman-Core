@@ -30,13 +30,14 @@ Every item below is judged against these two. A feature that would need either p
 
 ### Now
 
-- Ambient monitoring. Today Doberman sees only the tool calls that pass through it. The ambient layer adds three pieces: an activity bus (#236, in progress), a warm daemon that scores activity from other sources in observe-only mode (#237), and basic collectors with a documented drop-in format (#238). The goal is one place that sees what every agent on the machine is doing.
-- External benchmarks. Three third-party attack suites (RedCode-Exec, MSB, LLMail-Inject) already run through the harness next to my own corpus, so some of the numbers come from tests I did not write. The gaps those runs found are listed in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), and closing them is on the board.
-- Host containment. When a host's own hook layer crashes, the agent must not run unguarded. Codex has shown this failure once (#335). After that come deeper parsing of shell commands, escalation when high-entropy data leaves the machine, a honeytoken tripwire, and a per-session circuit breaker.
+- Promise bugs first. Two open reports say a promise bent: an AUTH that resolved without a human on Claude Code (#399), and the rule layer having no enforced authority ceiling (#630). Those are checked and fixed before anything below.
+- Ambient monitoring. Today Doberman sees only the tool calls that pass through it. The ambient layer adds three pieces: an activity bus (#236, merged, ships in the next release), a warm daemon that scores activity from other sources in observe-only mode (#237), and basic collectors with a documented drop-in format (#238). Later, the same warm process should run the adaptive layer for the host hooks too (#639). The goal is one place that sees what every agent on the machine is doing.
+- External benchmarks. Three third-party attack suites (RedCode-Exec, MSB, LLMail-Inject) already run through the harness next to my own corpus, so some of the numbers come from tests I did not write. The gaps those runs found are listed in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), and closing them is on the board (#644).
+- Host containment. When a host's own hook layer crashes, the agent must not run unguarded. Codex has shown this failure once (#335). After that come deeper parsing of shell commands (#634, #641), escalation when high-entropy data leaves the machine (#641), a honeytoken tripwire (#642), a per-session circuit breaker (#643), and a health check that cannot be fooled into saying hooks are on when they are off (#635, #636).
 
 ### Next
 
-- Judgment as a last resort. An AI judge that can raise a verdict to AUTH when the rules are unsure, never lower one, with a spending cap and its own on-off switch.
+- Judgment as a last resort. An AI judge that can raise a verdict to AUTH when the rules are unsure, never lower one, with a spending cap and its own on-off switch (#559).
 - Learning that forgets. Weights learned from your approve and deny history should decay back toward your chosen preset when they go stale (#410).
 - A real algebra version. Stamp the action vocabulary's version on every decision and refuse to trust a mismatch (#424).
 - A statistical channel for adversarial text. An optional extra that scores text with a small language model to catch the attacks the Unicode scanner cannot see (#235).
