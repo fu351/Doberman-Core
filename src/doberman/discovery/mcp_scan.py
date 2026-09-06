@@ -43,6 +43,7 @@ _INVISIBLE_CHANNELS = frozenset(
 _RISK_BY_PATTERN = {
     "invisible_chars": Risk.high,
     "mixed_script": Risk.medium,
+    "whole_script": Risk.medium,
     "templated_url": Risk.high,
     "raw_ip_url": Risk.high,
     "non_https_url": Risk.medium,
@@ -133,6 +134,8 @@ def _scan_server(server: str, source_file: str, config: dict[str, object]) -> se
             findings.add(_finding(server, source_file, "unicode", "invisible_chars"))
         if "mixed_script_confusable" in channels:
             findings.add(_finding(server, source_file, "unicode", "mixed_script"))
+        if "whole_script_confusable" in channels:
+            findings.add(_finding(server, source_file, "unicode", "whole_script"))
 
     env = config.get("env")
     env_values: list[str] = []

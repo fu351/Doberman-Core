@@ -31,6 +31,18 @@ def test_finds_zero_width_server_name_and_escapes_it(tmp_path):
     assert any("\\u200b" in finding.server for finding in unicode_findings)
 
 
+def test_finds_whole_script_confusable_server_name(tmp_path):
+    # All-Cyrillic look-alike for "server" — no script mixing, so only the
+    # whole-script channel (not mixed_script) should catch it.
+    _write_mcp_config(tmp_path, {"сервер": {"command": "server"}})
+
+    findings = scan_mcp_configs(str(tmp_path))
+
+    unicode_findings = [finding for finding in findings if finding.category == "unicode"]
+    assert any(finding.pattern_class == "whole_script" for finding in unicode_findings)
+    assert not any(finding.pattern_class == "mixed_script" for finding in unicode_findings)
+
+
 def test_finds_templated_exfil_url_in_args(tmp_path):
     _write_mcp_config(
         tmp_path,
