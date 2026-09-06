@@ -30,6 +30,7 @@ import os
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -40,6 +41,14 @@ from doberman.auth.elevation import DEFAULT_TTL_SECONDS, ElevationGrant
 
 CONFIG_DIR = ".doberman"
 DB_FILE = "doberman.db"
+
+# A proxy decision calls several storage helpers in sequence. Each helper keeps
+# using ``open_db`` so it remains safe as a standalone API, while this task-local
+# slot lets nested calls for the same repository share the outer connection.
+# ContextVar isolation prevents concurrent decisions from sharing a connection.
+_ACTIVE_DB: ContextVar[tuple[Path, aiosqlite.Connection] | None] = ContextVar(
+    "doberman_active_db", default=None
+)
 
 #: Current schema version. Bumped to 2 in Feature 8 (decision log + stores), to 3
 #: for the universal subjective layer (SL4/SL6/SL8: baselines re-keyed by entity,
@@ -509,22 +518,31 @@ async def open_db(repo_root: str = ".") -> AsyncIterator[aiosqlite.Connection]:
     """Open (creating if needed) the repo DB with the schema ensured.
 
     Creates ``.doberman/`` ``0700`` and the DB file ``0600`` on first use.
-    The migration runs only when the version row is not current: one decided
-    action opens the DB ~11 times, and re-running the legacy probes, the full
-    CREATE script and a committed version rewrite on each of them was the
-    dominant cost of every multi-action test (~1,100 opens for a 100-action
-    warm-up; 180-200 s per test on the Windows CI leg).
+    The migration runs only when the version row is not current. Nested calls
+    for the same repository reuse the task-local connection, so a complete
+    proxy decision performs one physical open and one schema check. Calls made
+    outside that scope keep the standalone open/close behavior.
     """
     path = db_path(repo_root)
+    key = path.resolve()
+    active = _ACTIVE_DB.get()
+    if active is not None and active[0] == key:
+        yield active[1]
+        return
+
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     conn = await aiosqlite.connect(str(path))
+    token = None
     try:
         await conn.execute("PRAGMA busy_timeout = 3000")
         if not await _schema_is_current(conn):
             await _ensure_schema(conn)
         _restrict_permissions(path)
+        token = _ACTIVE_DB.set((key, conn))
         yield conn
     finally:
+        if token is not None:
+            _ACTIVE_DB.reset(token)
         await conn.close()
 
 

@@ -182,6 +182,9 @@ protections (the taint ledger, a record of values that came from an untrusted so
 fingerprints; and the decision log) key off repo-local identity, never the protocol session, and are
 regression-tested to stay stateless.
 
+Each proxy decision reuses one task-local SQLite connection across its storage checks. Standalone
+storage calls and concurrent decisions retain independent connection lifecycles.
+
 Operators can bound how many decision rows are kept with `doberman decision-log-prune`. It deletes
 only resolved decisions, never pending `AUTH` rows or the append-only policy-change ledger. See the
 [CLI reference](docs/CLI.md) for the age and row-budget options.

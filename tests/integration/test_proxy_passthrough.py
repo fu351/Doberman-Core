@@ -12,6 +12,7 @@ from mcp.types import CallToolResult
 
 from doberman.proxy import executor
 from doberman.proxy.mcp_proxy import build_proxy_server
+from doberman.storage import db as db_module
 from tests.fixtures.fake_tool_server import KNOWN_TOOL_NAMES, FakeToolServer
 
 
@@ -47,6 +48,41 @@ async def test_call_is_forwarded_and_recorded():
         assert not result.isError
         assert result.content[0].text == "ok: fs_write executed"
         assert fake.calls == [("fs_write", {"path": "a.txt", "content": "hello"})]
+
+
+async def test_call_reuses_one_sqlite_connection(monkeypatch):
+    """One complete decision cycle owns one physical SQLite connection."""
+    real_connect = db_module.aiosqlite.connect
+    connect_paths = []
+
+    async def counting_connect(*args, **kwargs):
+        connect_paths.append(args[0])
+        return await real_connect(*args, **kwargs)
+
+    async with proxied_session() as (fake, agent):
+        await agent.list_tools()
+        monkeypatch.setattr(db_module.aiosqlite, "connect", counting_connect)
+        result = await agent.call_tool("shell_exec", {"command": "echo hi"})
+
+    assert not result.isError
+    assert fake.calls == [("shell_exec", {"command": "echo hi"})]
+    assert connect_paths == [str(db_module.db_path(executor.REPO_ROOT))]
+
+
+async def test_shared_connection_setup_failure_denies_call(monkeypatch):
+    """A failed decision-cycle connection must fail closed before forwarding."""
+
+    async def broken_schema(_conn):
+        raise db_module.aiosqlite.OperationalError("synthetic database failure")
+
+    monkeypatch.setattr(db_module, "_schema_is_current", broken_schema)
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("shell_exec", {"command": "echo hi"})
+
+    assert result.isError
+    assert "proxy_handler_error" in result.content[0].text
+    assert "synthetic database failure" not in result.content[0].text
+    assert fake.calls == []
 
 
 async def test_unknown_tool_errors_and_nothing_recorded():
