@@ -185,17 +185,15 @@ def test_irreversible_shell_force_push_gap_boundary():
     assert infer_reversibility(_shell_action(over_budget)).value != "low"
 
 
-# --- 5. src/doberman/update_check.py:105 -------------------------------------
-# ponytail: `_parse` compares only the numeric release prefix, so a
-# pre-release/dev suffix (`1.2.0rc1`) is treated as `(1, 2, 0)`.
-#
-# Already pinned: tests/unit/test_update_check.py::test_is_newer_is_fail_safe_on_garbage
-# asserts `update_check._parse("1.2.0rc1") == (1, 2, 0)` directly. Not
-# duplicated here. (Note: this test deliberately does NOT exercise the
-# cross-version-bump edge case — a pre-release that bumps the numeric prefix
-# above the installed version, e.g. current="1.9.0" vs latest="1.10.0rc1" —
-# which is a separate, already-queued contributor issue, not this stated
-# ceiling.)
+# --- 5. src/doberman/update_check.py -----------------------------------------
+# Ceiling lifted in #621: `_parse` still returns only the numeric release
+# prefix (`_parse("1.2.0rc1") == (1, 2, 0)`, pinned in
+# tests/unit/test_update_check.py::test_is_newer_is_fail_safe_on_garbage), but
+# `is_newer` now orders the `dev`/`a`/`b`/`rc` suffix through `_key`, including
+# the cross-version-bump case (current="1.2.0" vs latest="1.3.0rc1" -> no nag).
+# The remaining shortcut is the documented one: no epochs, post-releases, or
+# local `+tags` — those still rank as a plain final release. Pinned in
+# test_update_check.py's `#621` section, not duplicated here.
 
 
 # --- 6. src/doberman/engine/correlator.py:120 --------------------------------

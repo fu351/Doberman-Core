@@ -48,8 +48,65 @@ def test_is_newer_orders_releases():
 def test_is_newer_is_fail_safe_on_garbage():
     assert not update_check.is_newer("garbage", "0.18.1")
     assert not update_check.is_newer("", "0.18.1")
-    # a pre-release suffix is treated as its numeric prefix (never nag toward rc)
+    # _parse still yields the numeric release only; the suffix is ordered by _key
     assert update_check._parse("1.2.0rc1") == (1, 2, 0)
+    # int() rejects non-ASCII digits that str.isdigit accepts — must not raise (#621)
+    assert update_check._parse("1.\u00b2") == ()
+    assert not update_check.is_newer("1.\u00b2", "0.18.1")
+
+
+# --------------------------------------------------------------------------- #
+# pre-release / dev suffix ordering (#621)                                      #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "latest,current",
+    [
+        ("1.3.0", "1.3.0rc1"),  # rc -> its final: nag
+        ("1.3.0", "1.3.0.dev3"),  # dev -> its final: nag
+        ("1.3.0rc2", "1.3.0rc1"),  # rc1 -> rc2: nag
+        ("1.3.0rc1", "1.3.0b2"),  # beta -> rc: nag
+        ("1.3.0b1", "1.3.0a1"),  # alpha -> beta: nag
+        ("1.3.0a1", "1.3.0.dev9"),  # dev -> alpha: nag
+        ("1.10.0", "1.9.0rc1"),  # rc of 1.9 -> final 1.10: nag
+        ("1.3.0rc1", "1.2.0rc1"),  # pre -> later pre: nag (both pre-release)
+    ],
+)
+def test_is_newer_from_a_prerelease(latest, current):
+    assert update_check.is_newer(latest, current)
+
+
+@pytest.mark.parametrize(
+    "latest,current",
+    [
+        ("1.3.0rc1", "1.3.0"),  # rc is older than its final
+        ("1.3.0.dev3", "1.3.0"),  # dev is older than its final
+        ("1.3.0rc1", "1.3.0rc1"),  # same pre-release: not newer
+        ("1.3.0rc1", "1.3.0rc2"),  # older rc
+        ("1.3.0rc1", "1.2.0"),  # the issue's edge case: never nag a final toward a pre-release
+        ("2.0.0.dev1", "1.9.9"),  # same, dev phase
+        ("1.3.0.post1", "1.3.0"),  # unknown suffix == final; unchanged behaviour
+        ("1.3.0+local", "1.3.0"),  # local tag ignored; unchanged behaviour
+    ],
+)
+def test_is_newer_never_nags_toward_a_prerelease(latest, current):
+    assert not update_check.is_newer(latest, current)
+
+
+def test_key_orders_the_prerelease_family_and_stays_fail_open():
+    # dev < a < b < rc < final, all on the same release
+    ordered = ["1.0.0.dev1", "1.0.0a1", "1.0.0b1", "1.0.0rc1", "1.0.0"]
+    assert sorted(ordered, key=update_check._key) == ordered
+    # separator/case spelling variants land on the same key
+    assert update_check._key("1.0.0-RC1") == update_check._key("1.0.0rc1")
+    assert update_check._key("1.0.0.dev.3") == update_check._key("1.0.0dev3")
+    assert update_check._key("1.0.0rc") == update_check._key("1.0.0rc0")
+    # unparseable stays the documented ()
+    assert update_check._key("garbage") == ((), 0, 0)
+    assert update_check._key(None) == ((), 0, 0)
+    oversized_suffix = "1.0rc" + "1" * 5000
+    assert update_check._key(oversized_suffix) == ((), 0, 0)
+    assert not update_check.is_newer(oversized_suffix, "0.9.0")
+    assert not update_check.is_newer("1.0.0", oversized_suffix)
 
 
 def test_is_newer_is_silent_on_unknown_current_version():

@@ -22,6 +22,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -99,25 +100,68 @@ def _write_cache(latest: str, home: Path | None = None) -> None:
         logger.debug("could not write update-check cache", exc_info=True)
 
 
+#: Pre-release phases in PEP 440 order, lowest first, in the normalized spelling
+#: PyPI and installed metadata use. A final release ranks above every phase, so
+#: ``1.3.0`` beats ``1.3.0rc9`` and ``1.3.0rc1`` beats ``1.3.0b2``.
+_PRE_RANK: dict[str, int] = {"dev": 0, "a": 1, "b": 2, "rc": 3}
+_FINAL_RANK = len(_PRE_RANK)
+#: Splits ``1.2.0rc1`` into the numeric release ``1.2.0`` and the rest ``rc1``.
+_RELEASE_RE = re.compile(r"^(\d+(?:\.\d+)*)(.*)\Z", re.ASCII | re.DOTALL)
+#: A whole pre-release suffix: optional separator, phase, optional separator,
+#: optional number. Anchored, so a suffix of any other shape (``.post1``,
+#: ``+local``, garbage) keeps ranking as a final release, exactly as before.
+_PRE_RE = re.compile(r"^[._-]?(dev|a|b|rc)[._-]?(\d*)\Z", re.ASCII | re.IGNORECASE)
+
+
 def _parse(version: object) -> tuple[int, ...]:
     """Leading numeric ``X.Y.Z`` parts as a tuple; ``()`` on anything unparseable.
 
-    ponytail: compares only the numeric release prefix — a pre-release/dev suffix
-    (``1.2.0rc1``) is treated as ``(1, 2, 0)``, so we never nag toward a
-    pre-release. Swap in ``packaging.version`` if suffix-aware ordering matters.
+    Only the release prefix — a suffix such as ``rc1`` or ``.dev3`` is dropped
+    here and ordered by :func:`_key` instead. Never raises: any input that
+    cannot be read as digits yields ``()``.
     """
-    out: list[int] = []
-    for part in str(version).split("."):
-        digits = ""
-        for ch in part:
-            if ch.isdigit():
-                digits += ch
-            else:
+    try:
+        out: list[int] = []
+        for part in str(version).split("."):
+            digits = ""
+            for ch in part:
+                if ch.isdigit():
+                    digits += ch
+                else:
+                    break
+            if not digits:
                 break
-        if not digits:
-            break
-        out.append(int(digits))
-    return tuple(out)
+            out.append(int(digits))
+        return tuple(out)
+    except Exception:  # noqa: BLE001 — e.g. Unicode digits int() rejects; fail open
+        return ()
+
+
+def _key(version: object) -> tuple[tuple[int, ...], int, int]:
+    """Ordering key ``(release, phase_rank, phase_number)`` for :func:`is_newer`.
+
+    Suffix-aware without ``packaging``: a pre-release of version *N* sorts below
+    the final *N* and above everything that precedes *N*, so an installed rc is
+    nagged toward its final and a final is never nagged toward an rc.
+
+    ponytail: understands only the normalized ``dev``/``a``/``b``/``rc`` family
+    — no epochs, post-releases, or local ``+tags``; any other suffix ranks as a
+    final release, as the whole string did before. Swap in ``packaging.version``
+    if full PEP 440 ordering ever matters. Unparseable stays ``()``.
+    """
+    release = _parse(version)
+    if not release:
+        return ((), 0, 0)
+    split = _RELEASE_RE.match(str(version))
+    pre = _PRE_RE.match(split.group(2)) if split else None
+    if pre is None:
+        return (release, _FINAL_RANK, 0)
+    phase, number = pre.groups()
+    try:
+        phase_number = int(number or 0)
+    except (ValueError, OverflowError):
+        return ((), 0, 0)
+    return (release, _PRE_RANK[phase.lower()], phase_number)
 
 
 def _is_unknown_version(version: object) -> bool:
@@ -131,15 +175,23 @@ def _is_unknown_version(version: object) -> bool:
 
 
 def is_newer(latest: object, current: object) -> bool:
-    """True only if ``latest`` parses to a strictly higher release than ``current``.
+    """True only if ``latest`` orders strictly above ``current`` (see :func:`_key`).
 
     Never nags when ``current`` is unknown (see :func:`_is_unknown_version`) —
-    there's nothing to compare against.
+    there's nothing to compare against. Never nags from a final release toward
+    a pre-release of a *later* version either: ``1.3.0rc1`` is not "newer" than
+    an installed ``1.2.0`` for the purposes of ``pip install -U``, which would
+    not install it.
     """
     if _is_unknown_version(current):
         return False
-    latest_parts = _parse(latest)
-    return bool(latest_parts) and latest_parts > _parse(current)
+    latest_key = _key(latest)
+    current_key = _key(current)
+    if not latest_key[0] or not current_key[0]:
+        return False
+    if latest_key[1] != _FINAL_RANK and current_key[1] == _FINAL_RANK:
+        return False  # installed a final; the newer thing on PyPI is a pre-release
+    return latest_key > current_key
 
 
 def fetch_latest() -> str | None:
