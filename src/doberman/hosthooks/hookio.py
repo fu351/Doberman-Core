@@ -24,10 +24,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
-from doberman.models import Decision, ReasonCode, SecurityObject
+from doberman.models import ActionType, Decision, ReasonCode, SecurityObject
 
 if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
     from doberman.auth.challenge import Prompter
+    from doberman.models import EffectSet
 
 _REASON = DOG + " Doberman [{verdict}]: {explanation} (reasons: {reasons}; action {action_id})"
 FAILSAFE_REASON = DOG + " Doberman: failing closed — could not evaluate this action safely."
@@ -122,6 +123,71 @@ def resolve_auth(
     )[0]
 
 
+#: Action types whose ``target`` carries a shell command line. Mirrors the
+#: destructive-command rule's own ``_COMMAND_ACTION_TYPES`` fallback: that is the
+#: only shape from which a delete-class operand list can be recovered here.
+_COMMAND_BEARING = frozenset({ActionType.shell_exec, ActionType.git_op, ActionType.package_install})
+
+
+def _delete_operands(action: SecurityObject) -> tuple[list[str] | None, bool]:
+    """``(operands, dynamic)`` for a delete-class action, else ``(None, False)``.
+
+    Returns immediately for anything that is not a delete-class command, so no
+    filesystem work is ever reached on a non-delete AUTH — the same early-out
+    the proxy relies on. ``dynamic`` marks a delete whose operands include a
+    live shell substitution, where a count would be a guess rather than a
+    preview.
+    """
+    if action.action_type not in _COMMAND_BEARING:
+        return None, False
+    command = (action.target or "").strip()
+    if not command:
+        return None, False
+    from doberman.engine.rules.commands import delete_class_operands_and_dynamic
+
+    return delete_class_operands_and_dynamic(command)
+
+
+def _effects_for(operands: list[str], dynamic: bool, repo_root: str) -> "EffectSet":
+    """The bounded effect set for ``operands``, or the ``unknown`` sentinel.
+
+    ``compute_delete_effects`` is documented never to raise — every OS error,
+    cap, or timeout degrades to the non-authoritative ``unknown`` shade, whose
+    sentinel digest is what makes "a known count became unknown" register as
+    drift rather than as agreement.
+    """
+    from doberman.engine.effects import compute_delete_effects, unknown_effects
+
+    if dynamic:
+        return unknown_effects()
+    return compute_delete_effects(operands, repo_root)
+
+
+def _effect_set_diverged_deny(decision: Decision, event: str) -> dict[str, Any]:
+    """The deny payload for a delete whose effect set changed after approval.
+
+    Worded as its own outcome rather than a generic denial: the human DID
+    approve, and what they approved is not what is on disk now. Carries
+    ``effect_set_diverged`` so ``doberman log --why`` explains it the same way
+    the proxy path's synthetic BLOCK does.
+    """
+    reason = _REASON.format(
+        verdict="BLOCK",
+        explanation=(
+            "The filesystem changed between the approved preview and execution; "
+            "the effect set no longer matches what was shown"
+        ),
+        reasons=ReasonCode.effect_set_diverged.value,
+        action_id=decision.action_id,
+    )
+    return hook_output(
+        event,
+        "deny",
+        f"{reason} Next step: re-run the command so the approval covers what is "
+        "actually on disk now.",
+    )
+
+
 def resolve_auth_result(
     decision: Decision,
     action: SecurityObject,
@@ -148,19 +214,42 @@ def resolve_auth_result(
     Approved *and* bound to THIS action id → ``allow`` the one call. A denial, an
     unavailable channel, or any error → ``deny`` (fail closed). The auth stack is
     imported lazily so the common PASS/BLOCK hot path never pays for it.
+
+    **Delete-class blast radius (#649).** For a delete-class command this also
+    computes the bounded effect preview ADR 0094 defines, attaches it to the
+    decision every prompter renders, and recomputes it once the human answers —
+    denying if the two disagree. Until now that guard existed only on the MCP
+    proxy path (``proxy/executor.py``), so none of the four hosts had it, even
+    though a host hook is how most agents actually reach a tool. This function
+    is the one place all of them turn an approval into an execution, which is
+    why the recheck belongs here rather than in each adapter.
     """
-    # ponytail: no TOCTOU re-decide like the proxy — the hook grants no elevations and
-    # holds no state between calls, so there is nothing to re-check; each call is
-    # challenged independently.
+    # ponytail: no TOCTOU re-DECIDE like the proxy — the hook grants no elevations and
+    # holds no state between calls, so there is no elevation set to refresh; each call
+    # is challenged independently. The delete-class effect-set recheck below is a
+    # different guard and DOES apply here: it compares the filesystem against what the
+    # human was shown, which has nothing to do with elevation state.
     try:
         # Imported + built here (not at module scope) so the PASS/BLOCK hot path stays
         # light, and inside the try so a construction failure (e.g. no tkinter) also
         # fails closed with the actionable channel-error message.
         from doberman.auth.challenge import TIMEOUT_METHOD, run_auth_challenge
 
+        # ADR 0094 preview, before the challenge is rendered: the human approves a
+        # blast radius, so they have to be shown one. Computed once here and the
+        # operand list reused for the recheck below (one parse, matching the
+        # proxy's own M1 note) — and skipped entirely, with no filesystem walk,
+        # for any AUTH that is not a delete-class command.
+        operands, dynamic = _delete_operands(action)
+        previewed = None
+        challenged = decision
+        if operands is not None and repo_root:
+            previewed = _effects_for(operands, dynamic, repo_root)
+            challenged = decision.model_copy(update={"effects": previewed})
+
         active_prompter = prompter if prompter is not None else _default_auth_prompter()
         result = run_auth_challenge(
-            decision,
+            challenged,
             action,
             prompter=active_prompter,
             message_tone=message_tone,
@@ -174,6 +263,21 @@ def resolve_auth_result(
 
     # Approval is bound to THIS action id — never honor a result meant for another call.
     if result.approved and result.action_id == action.id:
+        # #649: recompute the SAME operands against the live filesystem and compare
+        # digests. Any divergence — in either direction, or a known count becoming
+        # unknown — denies: the human approved what the preview showed, not what is
+        # on disk now. A dynamic delete is `unknown` at both ends (same flag, never
+        # recomputed), so it cannot re-deny on dynamism alone, only on a real
+        # mismatch. A failure to recompute is itself a mismatch, because a guard
+        # that cannot verify must not report success.
+        if previewed is not None and operands is not None and repo_root:
+            try:
+                recomputed = _effects_for(operands, dynamic, repo_root)
+                diverged = recomputed.digest != previewed.digest
+            except Exception:  # noqa: BLE001 — cannot verify => cannot allow
+                diverged = True
+            if diverged:
+                return _effect_set_diverged_deny(decision, event), "effect_set_diverged"
         reason = format_reason(decision, "AUTH")
         return (
             hook_output(
